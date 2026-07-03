@@ -96,6 +96,38 @@ The training scripts in [scripts/](scripts) contain the exact commands and hyper
 
 Before training, you need to download the pre-trained [depth model](MODEL_ZOO.md), and set up your [wandb account](config/main.yaml) (in particular, by setting `wandb.entity=YOUR_ACCOUNT`) for logging.
 
+## MVSplat Side-by-Side Runtime
+
+This workspace includes a pinned MVSplat `main` archive snapshot under
+`third_party/mvsplat-main/` and a namespaced side-by-side runtime path for
+`model/encoder=costvolume` plus `model/decoder=mvsplat_splatting_cuda`.
+Use `+experiment=mvsplat_re10k`, `+experiment=mvsplat_acid`, or
+`+experiment=mvsplat_dtu` to select it.
+
+MVSplat's legacy CUDA rasterizer and pretrained weights are optional and are not
+installed or downloaded by default. See [MVSPLAT_INTEGRATION.md](MVSPLAT_INTEGRATION.md)
+for dependency notes and checkpoint locations.
+
+## AnySplat Impact Inference
+
+This workspace also includes a pinned AnySplat Impact archive snapshot under
+`third_party/anysplat-impact-main/` and a namespaced inference-only integration
+under `src/integrations/anysplat/`. Run it with `scripts/infer_anysplat.py`;
+weights are loaded from Hugging Face only when that command is executed.
+
+See [ANYSPLAT_INTEGRATION.md](ANYSPLAT_INTEGRATION.md) for command examples,
+optional dependencies, and environment notes.
+
+## Optional OpenSplat CPU Rendering
+
+COLMAP inference now supports an optional `--cpu` smoke/debug path that selects
+`model/decoder=opensplat_cpu` and forces `runtime.device=cpu`. This uses an
+external `opensplat_cpu_ext` Python extension that wraps OpenSplat CPU
+rasterization; OpenSplat source and binaries are not vendored because OpenSplat
+is AGPL-3.0.
+
+See [OPENSPLAT_CPU_INTEGRATION.md](OPENSPLAT_CPU_INTEGRATION.md) for the backend
+contract, build notes, and command examples.
 
 ## Citation
 

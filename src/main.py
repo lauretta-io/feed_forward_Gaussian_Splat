@@ -42,6 +42,33 @@ def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
 
 
+def resolve_runtime(cfg_dict: DictConfig) -> tuple[str, int | str, str]:
+    runtime = cfg_dict.get("runtime", {})
+    use_cpu = bool(runtime.get("cpu", False))
+    device = "cpu" if use_cpu else runtime.get("device", "auto")
+
+    if device == "auto":
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+
+    if device == "cpu":
+        return "cpu", 1, "cpu"
+    if device == "mps":
+        if not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
+            raise RuntimeError("runtime.device=mps requested but MPS is not available.")
+        return "mps", 1, "mps"
+    if device == "cuda":
+        cuda_devices = torch.cuda.device_count()
+        if not torch.cuda.is_available() or cuda_devices < 1:
+            raise RuntimeError("runtime.device=cuda requested but CUDA is not available.")
+        return "gpu", cuda_devices, "cuda"
+    raise ValueError(f"Unsupported runtime device: {device}")
+
+
 @hydra.main(
     version_base=None,
     config_path="../config",
@@ -180,12 +207,13 @@ def train(cfg_dict: DictConfig):
         # need this for recurrent update or init pt model
         dist_strategy = DDPStrategy(static_graph=True)
 
+    accelerator, devices, runtime_device = resolve_runtime(cfg_dict)
     trainer = Trainer(
         max_epochs=-1,
-        accelerator="gpu",
+        accelerator=accelerator,
         logger=logger,
-        devices=torch.cuda.device_count(),
-        strategy=dist_strategy if torch.cuda.device_count() > 1 else "auto",
+        devices=devices,
+        strategy=dist_strategy if runtime_device == "cuda" and torch.cuda.device_count() > 1 else "auto",
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
         enable_progress_bar=cfg.mode == "test",

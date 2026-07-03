@@ -32,6 +32,12 @@ class ModelCfg:
 
 
 @dataclass
+class RuntimeCfg:
+    device: Literal["auto", "cuda", "cpu", "mps"]
+    cpu: bool
+
+
+@dataclass
 class TrainerCfg:
     max_steps: int
     val_check_interval: int | float | None
@@ -48,6 +54,7 @@ class RootCfg:
     dataset: DatasetCfg
     data_loader: DataLoaderCfg
     model: ModelCfg
+    runtime: RuntimeCfg
     optimizer: OptimizerCfg
     checkpointing: CheckpointingCfg
     trainer: TrainerCfg

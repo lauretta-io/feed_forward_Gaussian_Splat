@@ -659,6 +659,16 @@ def build_model(experiment, checkpoint, num_refine, image_shape, overrides,
             f"dataset.ori_image_shape=[{image_shape[0]},{image_shape[1]}]",
             f"output_dir=outputs/colmap_inference",
         ]
+        runtime_device = None
+        if device == "cpu":
+            runtime_device = "cpu"
+            hydra_overrides.append("runtime.cpu=true")
+        elif device == "mps":
+            runtime_device = "mps"
+        elif str(device).startswith("cuda"):
+            runtime_device = "cuda"
+        if runtime_device is not None:
+            hydra_overrides.append(f"runtime.device={runtime_device}")
         hydra_overrides.extend(overrides)
         cfg_dict = compose(config_name="main", overrides=hydra_overrides)
 
@@ -831,10 +841,11 @@ def run_inference(encoder, decoder, batch, num_refine, render_chunk_size=10,
             depth_mode=None,
         )
         all_colors.append(output.color[0])  # [chunk, 3, H, W]
-        all_depths.append(output.depth[0])  # [chunk, H, W]
+        if output.depth is not None:
+            all_depths.append(output.depth[0])  # [chunk, H, W]
 
     rendered = torch.cat(all_colors, dim=0)  # [Vt, 3, H, W]
-    rendered_depth = torch.cat(all_depths, dim=0)  # [Vt, H, W]
+    rendered_depth = torch.cat(all_depths, dim=0) if all_depths else None
     print(f"Rendered {Vt} views at {h}x{w}")
 
     return gaussians, rendered, rendered_depth, visualization_dump
@@ -1324,6 +1335,12 @@ def parse_args():
 
     # Misc
     parser.add_argument(
+        "--cpu",
+        action="store_true",
+        default=False,
+        help="Use the optional OpenSplat CPU decoder path for inference-smoke rendering.",
+    )
+    parser.add_argument(
         "--device", type=str, default="cuda:0", help="Device to run on"
     )
     parser.add_argument(
@@ -1551,6 +1568,15 @@ def write_aggregate_metrics(all_metrics, output_dir):
 
 def main():
     args = parse_args()
+    if args.cpu:
+        args.device = "cpu"
+        args.no_eval = True
+        args.overrides = [
+            "runtime.cpu=true",
+            "runtime.device=cpu",
+            "model/decoder=opensplat_cpu",
+            *args.overrides,
+        ]
 
     # Apply model preset defaults (explicit CLI args take precedence)
     if args.model_preset:
@@ -1649,7 +1675,8 @@ def main():
                 print(f"\nError processing scene {sname}: {e}")
                 continue
             finally:
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             # Collect per-scene metrics
             metrics_path = os.path.join(scene_output_dir, "metrics.json")

@@ -1506,7 +1506,7 @@ class ModelWrapper(LightningModule):
                 break
 
             batch = self.data_shim(batch)
-            batch = self.transfer_batch_to_device(batch, "cuda", dataloader_idx=0)
+            batch = self.transfer_batch_to_device(batch, self.device, dataloader_idx=0)
 
             # Render Gaussians.
             b, v, _, h, w = batch["target"]["image"].shape
