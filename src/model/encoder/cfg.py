@@ -118,6 +118,7 @@ class EncoderCostVolumeCfg:
     wo_backbone_cross_attn: bool
     wo_cost_volume_refine: bool
     use_epipolar_trans: bool
+    no_crop_image: bool = False
     num_refine: int = 0
     use_checkpointing: bool = False
     init_use_checkpointing: bool = False

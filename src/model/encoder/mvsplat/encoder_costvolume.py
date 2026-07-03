@@ -11,12 +11,12 @@ from ....dataset.shims.bounds_shim import apply_bounds_shim
 from ....dataset.shims.patch_shim import apply_patch_shim
 from ....dataset.types import BatchedExample, DataShim
 from ....geometry.projection import sample_image_grid
+from ..encoder import Encoder
 from ...types import Gaussians
 from .backbone import (
     BackboneMultiview,
 )
 from .common.gaussian_adapter import GaussianAdapter, GaussianAdapterCfg
-from .encoder import Encoder
 from .costvolume.depth_predictor_multiview import DepthPredictorMultiView
 from .visualization.encoder_visualizer_costvolume_cfg import EncoderVisualizerCostVolumeCfg
 
@@ -58,6 +58,7 @@ class EncoderCostVolumeCfg:
     wo_backbone_cross_attn: bool
     wo_cost_volume_refine: bool
     use_epipolar_trans: bool
+    no_crop_image: bool = False
     num_refine: int = 0
     use_checkpointing: bool = False
     init_use_checkpointing: bool = False

@@ -1,0 +1,102 @@
+{
+  "source": {
+    "name": "DDOS_Pipeline",
+    "drive_url": "https://drive.google.com/drive/u/1/folders/1xRuZfOD99s78QusuCfxy04DmO0i6zXFV",
+    "root_folder_id": "1xRuZfOD99s78QusuCfxy04DmO0i6zXFV"
+  },
+  "train_data": {
+    "neighbourhood_102": {
+      "folder_id": "1cPToxC6xKnxA_aJ4tlU4pNOyKpOnXOQ9",
+      "url": "https://drive.google.com/drive/folders/1cPToxC6xKnxA_aJ4tlU4pNOyKpOnXOQ9",
+      "image": {
+        "folder_id": "1QdVUf5wDhoXykCuUZwv1P9ABk4cjCd4r",
+        "url": "https://drive.google.com/drive/folders/1QdVUf5wDhoXykCuUZwv1P9ABk4cjCd4r",
+        "observed_count": 50,
+        "observed_names": "0.png through 49.png"
+      },
+      "colmap_output": {
+        "folder_id": "1zrIcr5HkiToznEv6wCycOB_Ulz6KJuxM",
+        "url": "https://drive.google.com/drive/folders/1zrIcr5HkiToznEv6wCycOB_Ulz6KJuxM",
+        "database": {
+          "file_id": "1ZENIVM8nDHjMoYMqhFQVLCAYe4Jj1d63",
+          "name": "database.db",
+          "size_bytes": 85184512
+        },
+        "sparse": {
+          "folder_id": "1j4lkJ-SGiehGO_6Vglm1jKrC5eRq_lgc",
+          "url": "https://drive.google.com/drive/folders/1j4lkJ-SGiehGO_6Vglm1jKrC5eRq_lgc",
+          "observed_subfolders": ["0", "1"]
+        }
+      }
+    },
+    "neighbourhood_105": {
+      "folder_id": "18LqYIaLzAGs3Q_dlc6VSv0MwtgGixEaC",
+      "url": "https://drive.google.com/drive/folders/18LqYIaLzAGs3Q_dlc6VSv0MwtgGixEaC",
+      "image": {
+        "folder_id": "1U2EAt98P8jpB0YPRMH1e27oyYw-SVeU0",
+        "url": "https://drive.google.com/drive/folders/1U2EAt98P8jpB0YPRMH1e27oyYw-SVeU0",
+        "observed_count": 50,
+        "observed_names": "0.png through 49.png"
+      },
+      "colmap_output": {
+        "folder_id": "1IuKip_-pxCD6uW8WVl-7EsvBjc3GkIO6",
+        "url": "https://drive.google.com/drive/folders/1IuKip_-pxCD6uW8WVl-7EsvBjc3GkIO6",
+        "database": {
+          "file_id": "1GTeDb2aWWJ-UXF4ZXB8R6sdbIdu6cHBN",
+          "name": "database.db",
+          "size_bytes": 57880576
+        },
+        "sparse": {
+          "folder_id": "1eRL2lSnEm4Lx34Ynehdj30EY09DK3sFI",
+          "url": "https://drive.google.com/drive/folders/1eRL2lSnEm4Lx34Ynehdj30EY09DK3sFI",
+          "observed_subfolders": ["0"]
+        }
+      }
+    }
+  },
+  "model_outputs": {
+    "resplat": {
+      "neighbourhood_102": {
+        "latest_folder_id": "1rU1kEo9VZ6TGwQXS5zP_PLp-G8_AkqO4",
+        "latest_url": "https://drive.google.com/drive/folders/1rU1kEo9VZ6TGwQXS5zP_PLp-G8_AkqO4",
+        "legacy_folder_id": "1Tb9z5z--1j2ji5pjkGaQSHJhdEOBInhe",
+        "legacy_url": "https://drive.google.com/drive/folders/1Tb9z5z--1j2ji5pjkGaQSHJhdEOBInhe",
+        "observed_files": ["gaussians.ply", "metrics.json", "scene_102.mp4", "video.mp4"],
+        "observed_folders": ["input", "rendered"]
+      },
+      "neighbourhood_105": {
+        "latest_folder_id": "19yucfFlwrC4GpmOeXc_gxUFKQ-ld4SLQ",
+        "latest_url": "https://drive.google.com/drive/folders/19yucfFlwrC4GpmOeXc_gxUFKQ-ld4SLQ",
+        "legacy_folder_id": "1-5bG-gVmXsmpW6vDoDap8vIwdq7x54-F",
+        "legacy_url": "https://drive.google.com/drive/folders/1-5bG-gVmXsmpW6vDoDap8vIwdq7x54-F",
+        "observed_files": ["gaussians.ply", "metrics.json", "scene_105.mp4", "video.mp4"],
+        "observed_folders": ["input", "rendered"]
+      }
+    },
+    "mvsplat": {
+      "neighbourhood_102": {
+        "folder_id": "1cGQZmPAikfnvjpqc0JWtYEEQIi2gTWvD",
+        "url": "https://drive.google.com/drive/folders/1cGQZmPAikfnvjpqc0JWtYEEQIi2gTWvD",
+        "observed_files": ["neighbourhood_102.ply", "metrics.json"],
+        "observed_folders": ["color"]
+      },
+      "neighbourhood_105": {
+        "folder_id": "173PETAGqTyb2aSs9Qo61lN92QdW3Nqq2",
+        "url": "https://drive.google.com/drive/folders/173PETAGqTyb2aSs9Qo61lN92QdW3Nqq2",
+        "observed_files": ["neighbourhood_105.ply", "metrics.json"],
+        "observed_folders": ["color"]
+      }
+    },
+    "anysplat": {
+      "neighbourhood_102": {
+        "input_source": "train_data.neighbourhood_102.image",
+        "observed_drive_outputs": null
+      },
+      "neighbourhood_105": {
+        "input_source": "train_data.neighbourhood_105.image",
+        "observed_drive_outputs": null
+      }
+    }
+  }
+}
+
