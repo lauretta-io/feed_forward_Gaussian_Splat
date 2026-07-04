@@ -64,6 +64,25 @@ except:
 slurm_id_logged = False
 
 
+def compute_lpips_chunked(
+    ground_truth: Tensor,
+    predicted: Tensor,
+    chunk_size: int = 1,
+) -> Tensor:
+    scores = []
+    for start in range(0, ground_truth.shape[0], chunk_size):
+        end = min(start + chunk_size, ground_truth.shape[0])
+        scores.append(compute_lpips(ground_truth[start:end], predicted[start:end]))
+    return torch.cat(scores, dim=0)
+
+
+def wandb_artifact_safe_name(name: str) -> str:
+    return "".join(
+        char if char.isalnum() or char in "-_." else "-"
+        for char in name
+    ).strip("-")
+
+
 @dataclass
 class OptimizerCfg:
     lr: float
@@ -188,6 +207,22 @@ class ModelWrapper(LightningModule):
         if self.test_cfg.compute_scores:
             self.test_step_outputs = {}
             self.time_skip_steps_dict = {"encoder": 0, "decoder": 0}
+
+    def _log_test_result_artifact(self, out_dir: Path) -> None:
+        if not isinstance(self.logger, WandbLogger):
+            return
+
+        artifact = wandb.Artifact(
+            name=wandb_artifact_safe_name(f"{self.logger.experiment.name}-test-results"),
+            type="test-results",
+            metadata={
+                "global_step": int(self.global_step),
+                "output_dir": str(out_dir),
+            },
+        )
+        for path in sorted(out_dir.glob("*.json")):
+            artifact.add_file(str(path), name=path.name)
+        self.logger.experiment.log_artifact(artifact)
 
     def training_step(self, batch, batch_idx):
         batch: BatchedExample = self.data_shim(batch)
@@ -1075,9 +1110,12 @@ class ModelWrapper(LightningModule):
         if self.test_cfg.compute_scores:
             if batch_idx < self.test_cfg.eval_time_skip_steps:
                 self.time_skip_steps_dict["encoder"] += 1
-                self.time_skip_steps_dict["decoder"] += v
+            self.time_skip_steps_dict["decoder"] += v
 
             rgb = images_prob
+            if f"target_view_count" not in self.test_step_outputs:
+                self.test_step_outputs[f"target_view_count"] = []
+            self.test_step_outputs[f"target_view_count"].append(int(rgb.shape[0]))
 
             if f"psnr" not in self.test_step_outputs:
                 self.test_step_outputs[f"psnr"] = []
@@ -1093,7 +1131,7 @@ class ModelWrapper(LightningModule):
                 compute_ssim(rgb_gt, rgb).mean().item()
             )
             self.test_step_outputs[f"lpips"].append(
-                compute_lpips(rgb_gt, rgb).mean().item()
+                compute_lpips_chunked(rgb_gt, rgb).mean().item()
             )
 
             # compute depth metrics
@@ -1126,13 +1164,27 @@ class ModelWrapper(LightningModule):
     def on_test_end(self) -> None:
         out_dir = Path(self.test_cfg.output_path)
         saved_scores = {}
+        logger_metrics = {}
         if self.test_cfg.compute_scores:
             self.benchmarker.dump_memory(out_dir / "peak_memory.json")
             self.benchmarker.dump(out_dir / "benchmark.json")
+            cfg = get_cfg()
+            context_views = int(cfg.dataset.view_sampler.num_context_views)
+            target_view_counts = self.test_step_outputs.get("target_view_count", [])
+            if target_view_counts:
+                target_views = int(target_view_counts[0])
+                saved_scores["frame_count"] = target_views
+                logger_metrics["test/frame_count"] = target_views
+                logger_metrics["test/num_target_views"] = target_views
+            logger_metrics["test/num_context_views"] = context_views
 
             for metric_name, metric_scores in self.test_step_outputs.items():
-                avg_scores = sum(metric_scores) / len(metric_scores)
+                if metric_name == "target_view_count":
+                    metric_scores.clear()
+                    continue
+                avg_scores = float(sum(metric_scores) / len(metric_scores))
                 saved_scores[metric_name] = avg_scores
+                logger_metrics[f"test/{metric_name}"] = avg_scores
                 print(metric_name, avg_scores)
                 with (out_dir / f"scores_{metric_name}_all.json").open("w") as f:
                     json.dump(metric_scores, f)
@@ -1140,19 +1192,27 @@ class ModelWrapper(LightningModule):
 
             for tag, times in self.benchmarker.execution_times.items():
                 times = times[int(self.time_skip_steps_dict[tag]) :]
-                saved_scores[tag] = [len(times), np.mean(times)]
+                avg_time = float(np.mean(times)) if len(times) > 0 else None
+                saved_scores[tag] = [len(times), avg_time]
+                logger_metrics[f"test/runtime_count_{tag}"] = len(times)
+                if avg_time is not None:
+                    logger_metrics[f"test/runtime_avg_{tag}"] = avg_time
                 print(
-                    f"{tag}: {len(times)} calls, avg. {np.mean(times)} seconds per call"
+                    f"{tag}: {len(times)} calls, avg. {avg_time} seconds per call"
                 )
                 self.time_skip_steps_dict[tag] = 0
 
             with (out_dir / f"scores_all_avg.json").open("w") as f:
                 json.dump(saved_scores, f)
+            if logger_metrics and self.logger is not None:
+                self.logger.log_metrics(logger_metrics, step=self.global_step)
+            self._log_test_result_artifact(out_dir)
             self.benchmarker.clear_history()
         else:
             self.benchmarker.dump(out_dir / "benchmark.json")
             self.benchmarker.dump_memory(out_dir / "peak_memory.json")
             self.benchmarker.summarize()
+            self._log_test_result_artifact(out_dir)
 
 
     @rank_zero_only
@@ -1303,7 +1363,7 @@ class ModelWrapper(LightningModule):
         for tag, rgb in zip(("val",), (rgb_softmax,)):
             psnr = compute_psnr(rgb_gt, rgb).mean()
             self.log(f"val/psnr_{tag}", psnr)
-            lpips = compute_lpips(rgb_gt, rgb).mean()
+            lpips = compute_lpips_chunked(rgb_gt, rgb).mean()
             self.log(f"val/lpips_{tag}", lpips)
             ssim = compute_ssim(rgb_gt, rgb).mean()
             self.log(f"val/ssim_{tag}", ssim)
@@ -1672,7 +1732,7 @@ class ModelWrapper(LightningModule):
                     compute_psnr(rgb_gt, rgb).mean().item()
                 )
                 scores_dict["lpips"][tag].append(
-                    compute_lpips(rgb_gt, rgb).mean().item()
+                    compute_lpips_chunked(rgb_gt, rgb).mean().item()
                 )
                 scores_dict["ssim"][tag].append(
                     compute_ssim(rgb_gt, rgb).mean().item()
@@ -1712,12 +1772,17 @@ class ModelWrapper(LightningModule):
             for method_tag, cur_scores in methods.items():
                 if len(cur_scores) > 0:
                     cur_mean = sum(cur_scores) / len(cur_scores)
-                    self.log(f"test/{score_tag}", cur_mean)
+                    self.log(f"test/{score_tag}_{method_tag}", cur_mean)
+                    if method_tag == "probabilistic":
+                        self.log(f"test/{score_tag}", cur_mean)
         # summarise run time
         for tag, times in self.benchmarker.execution_times.items():
             times = times[int(time_skip_steps_dict[tag]) :]
-            print(f"{tag}: {len(times)} calls, avg. {np.mean(times)} seconds per call")
-            self.log(f"test/runtime_avg_{tag}", np.mean(times))
+            avg_time = float(np.mean(times)) if len(times) > 0 else None
+            print(f"{tag}: {len(times)} calls, avg. {avg_time} seconds per call")
+            self.log(f"test/runtime_count_{tag}", len(times))
+            if avg_time is not None:
+                self.log(f"test/runtime_avg_{tag}", avg_time)
         self.benchmarker.clear_history()
 
         overall_eval_time = time.time() - start_t
@@ -1886,7 +1951,9 @@ class ModelWrapper(LightningModule):
 
         # Since the PyTorch Lightning doesn't support video logging, log to wandb directly.
         try:
-            wandb.log(visualizations)
+            if not isinstance(self.logger, WandbLogger):
+                raise TypeError("Video logging requires a W&B logger.")
+            self.logger.experiment.log(visualizations, step=self.global_step)
         except Exception:
             assert isinstance(self.logger, LocalLogger)
             for key, value in visualizations.items():

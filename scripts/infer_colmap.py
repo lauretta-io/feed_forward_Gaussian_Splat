@@ -47,6 +47,7 @@ import struct
 import warnings
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -55,6 +56,7 @@ import torch
 import torchvision.transforms as tf
 from PIL import Image
 from src.misc.stablize_camera import render_stabilization_path
+from src.misc.weave_tools import finish_weave, init_weave
 
 warnings.filterwarnings("ignore")
 torch.set_float32_matmul_precision("high")
@@ -1128,6 +1130,119 @@ def compute_metrics(rendered, target_images, target_names, output_dir, device="c
     return results
 
 
+def serializable_config(args) -> dict[str, Any]:
+    config = {}
+    for key, value in vars(args).items():
+        if key.startswith("_"):
+            continue
+        if isinstance(value, Path):
+            value = str(value)
+        config[key] = value
+    return config
+
+
+def init_wandb(args):
+    if args.wandb_mode == "disabled":
+        return None
+
+    import wandb
+
+    return wandb.init(
+        entity=args.wandb_entity,
+        project=args.wandb_project,
+        mode=args.wandb_mode,
+        name=args.wandb_name or f"resplat-colmap/{args.model_preset or args.experiment}",
+        tags=args.wandb_tags,
+        config=serializable_config(args),
+    )
+
+
+def log_colmap_scene_to_wandb(
+    args,
+    scene_name: str,
+    output_dir: str,
+    metrics: dict | None,
+    context_indices,
+    target_indices,
+    resolution: tuple[int, int],
+) -> None:
+    run = getattr(args, "_wandb_run", None)
+    if run is None:
+        return
+
+    import wandb
+
+    output_path = Path(output_dir)
+    frame_count = len(set(context_indices.tolist()) | set(target_indices.tolist()))
+    log_data = {
+        "test/frame_count": frame_count,
+        "test/num_context_views": len(context_indices),
+        "test/num_target_views": len(target_indices),
+        "test/resolution_height": resolution[0],
+        "test/resolution_width": resolution[1],
+    }
+    if metrics is not None and "mean" in metrics:
+        log_data.update(
+            {
+                "test/psnr": metrics["mean"]["psnr"],
+                "test/ssim": metrics["mean"]["ssim"],
+                "test/lpips": metrics["mean"]["lpips"],
+                f"scene/{scene_name}/psnr": metrics["mean"]["psnr"],
+                f"scene/{scene_name}/ssim": metrics["mean"]["ssim"],
+                f"scene/{scene_name}/lpips": metrics["mean"]["lpips"],
+            }
+        )
+
+    rendered_dir = output_path / "rendered"
+    if rendered_dir.exists():
+        rendered_paths = sorted(rendered_dir.glob("*.png"))[:8]
+        if rendered_paths:
+            log_data[f"preview/{scene_name}/rendered"] = [
+                wandb.Image(str(path), caption=path.name) for path in rendered_paths
+            ]
+
+    video_path = output_path / "video.mp4"
+    if video_path.exists():
+        log_data[f"video/{scene_name}"] = wandb.Video(str(video_path), format="mp4")
+
+    run.log(log_data)
+
+    artifact_name = f"{run.name}-{scene_name}-colmap-results".replace("/", "-")
+    artifact = wandb.Artifact(
+        name=artifact_name,
+        type="test-results",
+        metadata={
+            "scene": scene_name,
+            "output_dir": str(output_path),
+            "model_preset": args.model_preset,
+            "checkpoint": args.checkpoint,
+        },
+    )
+    artifact.add_dir(str(output_path), name=scene_name)
+    run.log_artifact(artifact)
+
+
+def log_aggregate_metrics_to_wandb(args, output_dir: str) -> None:
+    run = getattr(args, "_wandb_run", None)
+    if run is None:
+        return
+
+    summary_path = Path(output_dir) / "aggregate_metrics.json"
+    if not summary_path.exists():
+        return
+
+    with summary_path.open() as f:
+        summary = json.load(f)
+    run.log(
+        {
+            "test/aggregate_psnr": summary["mean_psnr"],
+            "test/aggregate_ssim": summary["mean_ssim"],
+            "test/aggregate_lpips": summary["mean_lpips"],
+            "test/num_scenes": summary["num_scenes"],
+        }
+    )
+
+
 # =============================================================================
 # Main
 # =============================================================================
@@ -1355,6 +1470,43 @@ def parse_args():
         default=False,
         help="Skip evaluation metrics (PSNR/SSIM/LPIPS) on target views",
     )
+    parser.add_argument(
+        "--wandb-project",
+        default="resplat-tests",
+        help="W&B project for inference/test result logging.",
+    )
+    parser.add_argument(
+        "--wandb-entity",
+        default=None,
+        help="Optional W&B entity.",
+    )
+    parser.add_argument(
+        "--wandb-name",
+        default=None,
+        help="Optional W&B run name.",
+    )
+    parser.add_argument(
+        "--wandb-mode",
+        default="online",
+        choices=["online", "offline", "disabled"],
+        help="W&B logging mode.",
+    )
+    parser.add_argument(
+        "--wandb-tags",
+        nargs="*",
+        default=["resplat", "colmap", "inference", "smoke"],
+        help="W&B run tags.",
+    )
+    parser.add_argument(
+        "--weave-project",
+        default="galvin/gaussiansplat test",
+        help="Weave project initialized with weave.init(...).",
+    )
+    parser.add_argument(
+        "--no-weave",
+        action="store_true",
+        help="Disable Weave initialization for this run.",
+    )
 
     return parser.parse_args()
 
@@ -1513,6 +1665,7 @@ def run_scene(args, scene_path, scene_name, output_dir,
         )
 
     # Evaluate metrics on target views (rendered vs ground truth)
+    metrics = None
     if not args.no_eval:
         print(f"\nEvaluating metrics on target views...")
         metrics = compute_metrics(
@@ -1535,6 +1688,16 @@ def run_scene(args, scene_path, scene_name, output_dir,
         metrics_path = os.path.join(output_dir, "metrics.json")
         with open(metrics_path, "w") as f:
             json.dump(metrics, f, indent=2)
+
+    log_colmap_scene_to_wandb(
+        args,
+        scene_name,
+        output_dir,
+        metrics,
+        context_indices,
+        target_indices,
+        (target_h, target_w),
+    )
 
     print(f"\nDone! Results saved to {output_dir}")
     return encoder, decoder, data_shim
@@ -1626,6 +1789,9 @@ def main():
     if args.images_dir is None:
         args.images_dir = "images_4"
 
+    args._wandb_run = init_wandb(args)
+    args._weave_initialized = init_weave(args.weave_project, not args.no_weave)
+
     print("=" * 60)
     print("ReSplat COLMAP Inference")
     print("=" * 60)
@@ -1687,10 +1853,16 @@ def main():
         # Write aggregate metrics
         if all_metrics and not args.no_eval:
             write_aggregate_metrics(all_metrics, args.output_dir)
+            log_aggregate_metrics_to_wandb(args, args.output_dir)
     else:
         # Single scene mode (existing behavior)
         scene_name = os.path.basename(os.path.normpath(args.scene_path))
         run_scene(args, args.scene_path, scene_name, args.output_dir)
+
+    if args._wandb_run is not None:
+        args._wandb_run.finish()
+    if args._weave_initialized:
+        finish_weave()
 
 
 if __name__ == "__main__":

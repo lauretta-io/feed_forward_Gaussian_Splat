@@ -11,6 +11,13 @@ wandb:
   name: placeholder
   mode: online
   id: null
+  tags: null
+  log_model: false
+  log_code: true
+
+weave:
+  enabled: true
+  project: "galvin/gaussiansplat test"
 
 runtime:
   device: auto

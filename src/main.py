@@ -2,10 +2,10 @@ import os
 from pathlib import Path
 import warnings
 import copy
+import atexit
 
 import hydra
 import torch
-import wandb
 from colorama import Fore
 from jaxtyping import install_import_hook
 from omegaconf import DictConfig, OmegaConf
@@ -32,6 +32,7 @@ with install_import_hook(
     from src.misc.LocalLogger import LocalLogger
     from src.misc.step_tracker import StepTracker
     from src.misc.wandb_tools import update_checkpoint_path
+    from src.misc.weave_tools import finish_weave, init_weave
     from src.misc.resume_ckpt import find_latest_ckpt, no_resume_upsampler
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
@@ -40,6 +41,21 @@ with install_import_hook(
 
 def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
+
+
+def build_wandb_run_name(cfg_dict: DictConfig, output_dir: Path) -> str:
+    name = cfg_dict.wandb.get("name", None)
+    if name is None or name == "" or name == "placeholder":
+        run_name = output_dir.name
+    else:
+        run_name = f"{name} ({output_dir.parent.name}/{output_dir.name})"
+
+    if cfg_dict.log_slurm_id:
+        slurm_job_id = os.environ.get("SLURM_JOB_ID")
+        if slurm_job_id is not None:
+            run_name += f" ({slurm_job_id})"
+
+    return run_name
 
 
 def resolve_runtime(cfg_dict: DictConfig) -> tuple[str, int | str, str]:
@@ -149,31 +165,40 @@ def train(cfg_dict: DictConfig):
 
     # Set up logging with wandb.
     callbacks = []
-    if cfg_dict.wandb.mode != "disabled" and cfg.mode == "train":
+    if cfg_dict.wandb.mode != "disabled":
         wandb_extra_kwargs = {}
         if cfg_dict.wandb.id is not None:
             wandb_extra_kwargs.update({'id': cfg_dict.wandb.id,
                                        'resume': "must"})
-        run_name = os.path.basename(cfg_dict.output_dir)
-        if cfg_dict.log_slurm_id:
-            run_name += f" ({os.environ.get('SLURM_JOB_ID')})"
+        run_name = build_wandb_run_name(cfg_dict, output_dir)
         logger = WandbLogger(
             entity=cfg_dict.wandb.entity,
             project=cfg_dict.wandb.project,
             mode=cfg_dict.wandb.mode,
             name=run_name,
             tags=cfg_dict.wandb.get("tags", None),
-            log_model=False,
+            log_model=cfg_dict.wandb.get("log_model", False),
             save_dir=output_dir,
-            config=OmegaConf.to_container(cfg_dict),
+            config=OmegaConf.to_container(cfg_dict, resolve=True),
             **wandb_extra_kwargs,
         )
-        callbacks.append(LearningRateMonitor("step", True))
+        if cfg.mode == "train":
+            callbacks.append(LearningRateMonitor("step", True))
 
-        if wandb.run is not None:
-            wandb.run.log_code("src")
+        if cfg_dict.wandb.get("log_code", True):
+            try:
+                logger.experiment.log_code("src")
+            except Exception as e:
+                warnings.warn(f"Failed to log source code to W&B: {e}")
     else:
         logger = LocalLogger()
+
+    weave_cfg = cfg_dict.get("weave", {})
+    if init_weave(
+        weave_cfg.get("project", "galvin/gaussiansplat test"),
+        bool(weave_cfg.get("enabled", True)),
+    ):
+        atexit.register(finish_weave)
 
     # Set up checkpointing.
     callbacks.append(
