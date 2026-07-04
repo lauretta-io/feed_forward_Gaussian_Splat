@@ -50,6 +50,7 @@ class TrainerCfg:
 @dataclass
 class RootCfg:
     wandb: dict
+    weave: dict
     mode: Literal["train", "test"]
     dataset: DatasetCfg
     data_loader: DataLoaderCfg

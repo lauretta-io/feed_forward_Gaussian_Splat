@@ -18,9 +18,9 @@ from .....visualization.drawing.lines import draw_lines
 from .....visualization.drawing.points import draw_points
 from .....visualization.layout import add_border, hcat, vcat
 # from ...ply_export import export_ply
+from ...visualization.encoder_visualizer import EncoderVisualizer
 from ..encoder_costvolume import EncoderCostVolume
 # from ..epipolar.epipolar_sampler import EpipolarSampling
-from .encoder_visualizer import EncoderVisualizer
 from .encoder_visualizer_costvolume_cfg import EncoderVisualizerCostVolumeCfg
 
 

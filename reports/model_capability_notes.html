@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gaussian Splat Dashboard Notes</title>
+  <style>
+
+    :root {
+      color-scheme: light;
+      --ink: #172018;
+      --muted: #5b665e;
+      --line: #d8ded7;
+      --panel: #ffffff;
+      --soft: #f5f7f4;
+      --green: #2f6f4e;
+      --blue: #315f8d;
+      --rose: #9a4253;
+      --gold: #9f761a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--ink); background: var(--soft); }
+    header { padding: 28px 36px 20px; border-bottom: 1px solid var(--line); background: #fff; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    nav a { color: var(--ink); text-decoration: none; border: 1px solid var(--line); border-radius: 999px; padding: 7px 12px; font-size: 13px; background: #fafbf9; }
+    nav a.active { color: #fff; border-color: var(--green); background: var(--green); }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }
+    header p { max-width: 980px; margin: 0; color: var(--muted); line-height: 1.45; }
+    main { padding: 24px 36px 40px; display: grid; gap: 24px; }
+    h2 { margin: 0 0 12px; font-size: 18px; letter-spacing: 0; }
+    h3 { margin: 0; font-size: 16px; letter-spacing: 0; }
+    h4 { margin: 14px 0 8px; font-size: 13px; color: var(--muted); }
+    p { line-height: 1.55; }
+    .band { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; }
+    .models { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .model-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: grid; gap: 14px; min-height: 320px; }
+    .model-card p { margin: 4px 0 0; color: var(--muted); }
+    dl { margin: 0; display: grid; gap: 8px; }
+    dt { font-size: 12px; color: var(--muted); text-transform: uppercase; }
+    dd { margin: 0; line-height: 1.35; }
+    ul { margin: 0; padding-left: 18px; line-height: 1.55; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #28352c; }
+    .run-ids { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
+    .run-ids span { border: 1px solid var(--line); border-radius: 999px; padding: 4px 8px; background: #fafbf9; }
+    .capability-graph { width: 100%; max-height: 620px; }
+    .edge { stroke: #aeb9b0; stroke-width: 1.4; marker-end: url(#arrow); }
+    marker path { fill: #aeb9b0; }
+    .node circle { stroke: #fff; stroke-width: 3; }
+    .node text { text-anchor: middle; font-size: 12px; fill: var(--ink); paint-order: stroke; stroke: #fff; stroke-width: 4px; }
+    .node-source circle { fill: var(--gold); }
+    .node-model circle { fill: var(--green); }
+    .node-capability circle { fill: var(--blue); }
+    .node-output circle { fill: var(--rose); }
+    .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+    .metric-card { border: 1px solid var(--line); border-radius: 8px; padding: 16px; background: #fff; }
+    .bar-row { display: grid; grid-template-columns: 95px 1fr 74px; gap: 10px; align-items: center; min-height: 28px; font-size: 13px; }
+    .bar-track { height: 9px; border-radius: 999px; background: #e5ebe5; overflow: hidden; }
+    .bar-track i { display: block; height: 100%; background: var(--green); }
+    .bar-row strong { text-align: right; font-size: 12px; }
+    .gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+    figure { margin: 0; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    figure img { width: 100%; display: block; aspect-ratio: 16 / 9; object-fit: cover; background: #e8ece7; }
+    figcaption { padding: 10px; color: var(--muted); line-height: 1.35; font-size: 12px; }
+    .file-icon { height: 140px; display: grid; place-items: center; background: #e9eee9; color: var(--green); font-weight: 700; letter-spacing: 0.08em; }
+    .doc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .doc-card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+    .doc-card p { margin: 8px 0 0; color: var(--muted); }
+    .doc-card ul { margin-top: 10px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; background: #fff; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .callout { border-left: 4px solid var(--green); padding: 12px 14px; background: #f8faf7; color: var(--muted); }
+    @media (max-width: 1000px) { .models, .metric-grid, .gallery, .doc-grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 700px) { header, main { padding-left: 18px; padding-right: 18px; } .models, .metric-grid, .gallery, .doc-grid { grid-template-columns: 1fr; } .bar-row { grid-template-columns: 86px 1fr 62px; } }
+  
+  </style>
+</head>
+<body>
+  <header>
+    <nav><a class="" href="model_capability_dashboard.html">Dashboard</a><a class="active" href="model_capability_notes.html">Notes</a></nav>
+    <h1>Dashboard Notes And Data Requirements</h1>
+    <p>Local documentation for how the Gaussian splat dashboard is produced, what each model needs, what the 5-frame and 10-frame tests prove, and what the current limitations are.</p>
+  </header>
+  <main>
+    <section class="band">
+      <h2>Operating Notes</h2>
+      <section class="doc-grid"><article class="doc-card"><h3>How This Is Run Locally</h3><p>The dashboard is a static local report. It does not need a web server, database, or live API calls after generation.</p><ul><li>Open reports/model_capability_dashboard.html or reports/model_capability_notes.html directly in a browser.</li><li>Regenerate both pages with python scripts/build_model_capability_page.py.</li><li>The dashboard embeds local PNG previews as data URIs and links JSON/PT artifacts by path.</li></ul></article><article class="doc-card"><h3>W&amp;B And Weave Linkage</h3><p>Runs are logged to the resplat-tests W&amp;B project, while Weave is initialized with galvin/gaussiansplat test.</p><ul><li>Run metadata includes tags, frame counts, result metrics, and saved artifacts.</li><li>The local API key is loaded from .env and is intentionally not embedded into generated reports.</li><li>Local wandb/ directories are ignored by git and only run IDs are shown in the HTML.</li></ul></article><article class="doc-card"><h3>Data Requirements</h3><p>The three model paths need different input formats, so the frame tests use small adapters around shared visual content where possible.</p><ul><li>ReSplat expects a COLMAP scene with images_4 or images_8 plus sparse/0 camera data.</li><li>MVSplat expects RealEstate10K-style .torch chunks with index.json.</li><li>AnySplat expects a flat folder of PNG, JPG, or JPEG source images.</li></ul></article><article class="doc-card"><h3>Weights And Runtime</h3><p>All model checks require GPU-oriented dependencies and local checkpoints or downloaded model weights.</p><ul><li>ReSplat uses the DL3DV checkpoint plus the gmdepth dependency link.</li><li>MVSplat uses checkpoints/re10k.ckpt and the legacy CUDA Gaussian rasterizer.</li><li>AnySplat pulls lhjiang/anysplat and facebook/VGGT-1B from Hugging Face on first run.</li></ul></article><article class="doc-card"><h3>Limitations</h3><p>These are smoke-scale 5-frame and 10-frame checks, not a full benchmark or scientific comparison.</p><ul><li>ReSplat and AnySplat can share selected DL3DV frames, but MVSplat currently uses the RE10K two-scene subset.</li><li>AnySplat reports reconstruction statistics instead of PSNR/SSIM/LPIPS because no target-view ground truth path is wired here.</li><li>The static HTML reflects the most recent local outputs at generation time; rerun the harness after code or data changes.</li></ul></article><article class="doc-card"><h3>Troubleshooting</h3><p>Most failures are caused by missing checkpoints, missing CUDA extensions, or dataset shape mismatches.</p><ul><li>Load .env before online W&amp;B runs: set -a; source .env; set +a.</li><li>Use dataset.highres=true for the downloaded 720p RE10K subset.</li><li>Review SMOKE_TESTS.md for the exact dependency and download commands used in this workspace.</li></ul></article></section>
+    </section>
+    <section class="band">
+      <h2>Model Inputs, Outputs, And W&B Runs</h2>
+      <div class="table-wrap"><table><thead><tr><th>Model</th><th>Data Requirements</th><th>Generated Evidence</th><th>W&B Run IDs</th></tr></thead><tbody><tr><td><strong>ReSplat COLMAP</strong><br>feed-forward Gaussian splatting</td><td>COLMAP scene, sparse cameras, images_4/images_8 frames</td><td>Rendered target views, Gaussian scene representation, PSNR/SSIM/LPIPS</td><td><code>5f: 660n94vb</code><br><code>10f: y2v39r51</code></td></tr><tr><td><strong>MVSplat RE10K</strong><br>cost-volume Gaussian splatting</td><td>RE10K torch chunks and sampled context/target views</td><td>Rendered target views, scores JSON, benchmark JSON, W&amp;B result artifact</td><td><code>5f: 0snhsgd5</code><br><code>10f: h2al9i2r</code></td></tr><tr><td><strong>AnySplat Image Folder</strong><br>image-folder Gaussian reconstruction</td><td>Flat directory of 5 or 10 source images</td><td>Predicted camera poses, Gaussian statistics, manifest artifact</td><td><code>5f: ajzxkwuk</code><br><code>10f: spp9h258</code></td></tr></tbody></table></div>
+    </section>
+    <section class="band">
+      <h2>Technical Architecture</h2>
+      <section class="doc-grid"><article class="doc-card"><h3>ReSplat COLMAP Architecture</h3><dl><dt>Input contract</dt><dd>COLMAP images and sparse cameras are converted into the shared batched context/target format used by the model wrapper.</dd><dt>Depth and matching</dt><dd>EncoderReSplat runs MultiViewUniMatch with log-depth candidates, camera-aware matching, and raw mono/CNN/multi-view features.</dd><dt>Gaussian prediction</dt><dd>Image, latent depth, match probability, and fused features are projected into latent points. A KNN PlainPointTransformer predicts scale, rotation, spherical harmonics, offsets, and opacity.</dd><dt>Refinement path</dt><dd>When enabled, recurrent refinement renders the current Gaussian set, extracts render-error features, applies multi-view attention, and predicts per-Gaussian updates.</dd><dt>Rendering</dt><dd>The default decoder uses the gsplat CUDA splatting path; the COLMAP script can also select the OpenSplat CPU decoder for smoke rendering.</dd></dl></article><article class="doc-card"><h3>MVSplat RE10K Architecture</h3><dl><dt>Input contract</dt><dd>RealEstate10K-style .torch chunks with index.json are loaded through the Hydra test pipeline and dataset shims.</dd><dt>Feature backbone</dt><dd>EncoderCostVolume uses a BackboneMultiview UniMatch-style CNN/transformer stack with optional epipolar transformer support.</dd><dt>Depth volume</dt><dd>DepthPredictorMultiView builds a multi-view cost volume over 32 depth candidates, refines it with U-Net blocks, and predicts depths, densities, and raw Gaussian attributes.</dd><dt>Gaussian conversion</dt><dd>A GaussianAdapter unprojects per-pixel depth samples with camera intrinsics/extrinsics, applies learned pixel offsets, maps densities to opacity, and packs the scene into the shared Gaussians dataclass.</dd><dt>Rendering</dt><dd>The experiment uses model/decoder=mvsplat_splatting_cuda, backed by the legacy diff_gaussian_rasterization CUDA extension.</dd></dl></article><article class="doc-card"><h3>AnySplat Image-Folder Architecture</h3><dl><dt>Input contract</dt><dd>A flat image folder is normalized into an image batch; no COLMAP cameras or chunk metadata are required.</dd><dt>Geometry backbone</dt><dd>EncoderAnySplat loads VGGT-1B components, using the aggregator plus camera and depth or point heads to predict poses, intrinsics, depth/points, and confidence.</dd><dt>Gaussian head</dt><dd>A VGGT_DPT_GS_Head fuses transformer tokens with dense geometry to produce opacity and Gaussian feature channels.</dd><dt>Gaussian conversion</dt><dd>The integration optionally filters or voxelizes confident points, maps densities to opacities, and uses the AnySplat GaussianAdapter to produce 3D Gaussian attributes.</dd><dt>Outputs</dt><dd>The wired test logs predicted poses, manifest metadata, Gaussian counts, opacity/scale statistics, source previews, and artifacts to W&amp;B.</dd></dl></article></section>
+    </section>
+    <section class="band">
+      <h2>Reproduce The Evidence</h2>
+      <div class="callout">
+        <p>Load local secrets with <code>set -a; source .env; set +a</code>, then run <code>scripts/run_wandb_frame_tests.sh</code>. Rebuild the static pages afterward with <code>python scripts/build_model_capability_page.py</code>.</p>
+        <p>Generated evidence is read from <code>outputs/frame_tests</code>. The report files are written to <code>reports/model_capability_dashboard.html</code> and <code>reports/model_capability_notes.html</code>.</p>
+      </div>
+    </section>
+    <section class="band">
+      <h2>Local Documentation Sources</h2>
+      <ul>
+        <li><code>SMOKE_TESTS.md</code> has the verified commands, W&B behavior, checkpoint notes, and smoke-test outcomes.</li>
+        <li><code>DATASETS.md</code> describes RealEstate10K, DL3DV, ACID, and chunk-format expectations.</li>
+        <li><code>scripts/run_wandb_frame_tests.sh</code> is the repeatable 5-frame and 10-frame test harness.</li>
+        <li><code>scripts/build_model_capability_page.py</code> generates this static dashboard and notes page using NetworkX.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

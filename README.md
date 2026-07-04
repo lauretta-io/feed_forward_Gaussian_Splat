@@ -51,6 +51,11 @@ pip install --no-build-isolation git+https://github.com/nerfstudio-project/gspla
 cd src/model/encoder/pointops && python setup.py install && cd ../../../..
 ```
 
+For repo-local environment setup, CUDA validation commands, and troubleshooting
+notes for common installation failures, see [SETUP.md](SETUP.md).
+For small dataset smoke tests and known pass/fail commands, see
+[SMOKE_TESTS.md](SMOKE_TESTS.md).
+
 ## Model Zoo
 
 Pre-trained models are available in the [Model Zoo](MODEL_ZOO.md).
