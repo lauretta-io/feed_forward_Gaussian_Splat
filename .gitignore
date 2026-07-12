@@ -176,3 +176,11 @@ CLAUDE.md
 debug*
 doc/
 notebooks/
+
+# Keep the ReSplat/U2-Net experiment source and empty output placeholders
+# trackable despite the broad datasets*/outputs* rules above.
+!experiments/resplat_u2net_saliency/datasets.py
+!experiments/resplat_u2net_saliency/outputs/
+experiments/resplat_u2net_saliency/outputs/**
+!experiments/resplat_u2net_saliency/outputs/**/
+!experiments/resplat_u2net_saliency/outputs/**/.gitkeep

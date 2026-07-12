@@ -387,17 +387,36 @@ def load_colmap_scene(scene_path, sparse_dir="sparse/0", images_dir="images"):
         # Get camera intrinsics
         cam = cam_intrinsics[img.camera_id]
 
-        # Only support PINHOLE and SIMPLE_PINHOLE (undistorted images)
+        # Convert common COLMAP camera models to a pinhole intrinsic matrix for
+        # inference. Distortion coefficients are ignored; callers should still
+        # prefer undistorted images when exact geometry matters.
         if cam.model == "PINHOLE":
             fx, fy, cx, cy = cam.params[:4]
         elif cam.model == "SIMPLE_PINHOLE":
             f, cx, cy = cam.params[:3]
             fx = fy = f
+        elif cam.model == "SIMPLE_RADIAL":
+            f, cx, cy = cam.params[:3]
+            fx = fy = f
+        elif cam.model == "RADIAL":
+            f, cx, cy = cam.params[:3]
+            fx = fy = f
+        elif cam.model == "OPENCV":
+            fx, fy, cx, cy = cam.params[:4]
+        elif cam.model == "FULL_OPENCV":
+            fx, fy, cx, cy = cam.params[:4]
+        elif cam.model == "SIMPLE_RADIAL_FISHEYE":
+            f, cx, cy = cam.params[:3]
+            fx = fy = f
+        elif cam.model == "RADIAL_FISHEYE":
+            f, cx, cy = cam.params[:3]
+            fx = fy = f
+        elif cam.model == "OPENCV_FISHEYE":
+            fx, fy, cx, cy = cam.params[:4]
         else:
             print(
                 f"Warning: Unsupported camera model '{cam.model}' for image "
-                f"{img.name}, skipping. Only PINHOLE and SIMPLE_PINHOLE are "
-                f"supported. Please undistort images first using COLMAP."
+                f"{img.name}, skipping."
             )
             continue
 
