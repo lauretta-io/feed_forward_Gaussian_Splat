@@ -176,6 +176,7 @@ CLAUDE.md
 debug*
 doc/
 notebooks/
+.wandb-cache/
 
 # Keep the ReSplat/U2-Net experiment source and empty output placeholders
 # trackable despite the broad datasets*/outputs* rules above.
@@ -184,3 +185,12 @@ notebooks/
 experiments/resplat_u2net_saliency/outputs/**
 !experiments/resplat_u2net_saliency/outputs/**/
 !experiments/resplat_u2net_saliency/outputs/**/.gitkeep
+
+# ARIADNE dataset adapters, registry, and documentation are source files.
+!applications/ariadne/configs/datasets/
+!applications/ariadne/configs/datasets/**
+!applications/ariadne/docs/datasets.md
+!applications/ariadne/src/ariadne/datasets/
+!applications/ariadne/src/ariadne/datasets/**
+applications/ariadne/src/ariadne/datasets/__pycache__/
+applications/ariadne/src/ariadne/datasets/**/*.pyc

@@ -1,0 +1,8 @@
+runtime:
+  role: intelligence
+  node_id: intelligence_01
+  log_level: INFO
+  json_logs: false
+  output_dir: outputs/ariadne/intelligence_01
+intelligence:
+  global_frame: global

@@ -1,0 +1,39 @@
+datasets:
+  qdrone:
+    license: MIT
+    upstream: https://huggingface.co/datasets/QDrone/UWB_IMU_GT_QDrone_Benchmark_Dataset
+    full_size_bytes: 59116199
+    local_path: datasets/ariadne/qdrone/raw
+    role: imu_uwb_regression
+  miluv:
+    license: CC-BY-4.0
+    upstream: https://doi.org/10.25452/figshare.plus.28386041.v1
+    full_size_bytes: 185736682062
+    local_path: datasets/ariadne/miluv/archives/default_3_random_0.zip
+    role: primary_three_uav_visual_inertial
+    selected_file:
+      name: default_3_random_0.zip
+      size_bytes: 3231673980
+      md5: 09236b18470f0dd99c33245ee1c994ee
+      url: https://ndownloader.figshare.com/files/52291625
+  d2slam:
+    license: verify-dataset-terms
+    upstream: https://github.com/HKUST-Aerial-Robotics/D2SLAM
+    full_size_bytes: 171548106398
+    local_path: datasets/ariadne/d2slam/extracted/tum_corr
+    role: aerial_fisheye_and_multi_robot_format
+    selected_file:
+      name: tum_corr.7z
+      size_bytes: 1402927165
+      url: https://www.dropbox.com/s/ic0yuxr2xym1m0c/tum_corr.7z?dl=1
+  s3e:
+    license: CC-BY-4.0
+    upstream: https://huggingface.co/datasets/PengYu-Team/S3E
+    full_size_bytes: 278000000000
+    local_path: datasets/ariadne/s3e/S3Ev1/S3E_Playground_2/S3E_Playground_2.db3
+    role: three_agent_stereo_imu_dynamic_scene
+    selected_file:
+      name: S3E_Playground_2.db3
+      size_bytes: 6732963840
+      sha256: fa2bceb5064fa50318452fba247f49971b4119f3bf6af686629b30a265d1b095
+      url: https://huggingface.co/datasets/PengYu-Team/S3E/resolve/main/S3Ev1/S3E_Playground_2/S3E_Playground_2.db3

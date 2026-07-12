@@ -1985,7 +1985,7 @@ Only then should it write code.
 ```text
 You are working in the repository lauretta-io/feed_forward_Gaussian_Splat.
 
-Read ARIADNE_CODEX_BUILD_SPEC.md and inspect the existing repository before making changes. ARIADNE must be implemented under applications/ariadne and must not break the existing ReSplat, MVSplat, AnySplat or OpenSplat paths.
+Read documentation/ARIADNE_CODEX_BUILD_SPEC.md and inspect the existing repository before making changes. ARIADNE must be implemented under applications/ariadne and must not break the existing ReSplat, MVSplat, AnySplat or OpenSplat paths.
 
 Start with Module 00 and Module 01 only.
 
@@ -2022,4 +2022,3 @@ At completion, provide:
 - unresolved risks;
 - recommended next module.
 ```
-

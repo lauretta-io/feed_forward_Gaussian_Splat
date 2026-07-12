@@ -1,0 +1,9 @@
+runtime:
+  role: wingman
+  node_id: wingman_01
+  log_level: INFO
+  json_logs: false
+  output_dir: outputs/ariadne/wingman_01
+wingman:
+  local_frame: local_wingman_01
+  body_frame: body

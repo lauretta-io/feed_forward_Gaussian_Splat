@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ariadne-autonomy"
+version = "0.1.0"
+description = "Vision-first distributed autonomy runtime for ARIADNE"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "hydra-core>=1.3,<2",
+  "numpy>=1.26,<3",
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+evaluation = [
+  "rosbags>=0.10,<1",
+  "wandb>=0.22,<1",
+]
+dev = [
+  "mypy>=1.10,<2",
+  "pre-commit>=3.7,<5",
+  "pytest>=8.2,<9",
+  "ruff>=0.5,<1",
+  "rosbags>=0.10,<1",
+  "wandb>=0.22,<1",
+]
+
+[project.scripts]
+ariadne = "ariadne.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["ariadne"]
