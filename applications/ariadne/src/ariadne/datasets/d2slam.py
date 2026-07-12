@@ -16,7 +16,9 @@ def _evaluate_bag_directory(path: Path) -> DatasetEvaluation:
     try:
         from rosbags.rosbag1 import Reader
     except ImportError as error:
-        raise RuntimeError("install ARIADNE with the evaluation extra to inspect ROS bags") from error
+        raise RuntimeError(
+            "install ARIADNE with the evaluation extra to inspect ROS bags"
+        ) from error
     bags = sorted(path.rglob("*.bag"))
     if not bags:
         raise ValueError(f"no ROS1 bags found beneath: {path}")
@@ -119,7 +121,9 @@ def evaluate_d2slam(path: Path) -> DatasetEvaluation:
         )
         if config.returncode == 0:
             config_text = config.stdout
-    agent_tokens = set(re.findall(r"(?:drone|swarm|agent)[_-]?(\d+)", lowered + config_text.lower()))
+    agent_tokens = set(
+        re.findall(r"(?:drone|swarm|agent)[_-]?(\d+)", lowered + config_text.lower())
+    )
     warnings = []
     if not agent_tokens:
         warnings.append("archive names do not expose explicit physical drone IDs")

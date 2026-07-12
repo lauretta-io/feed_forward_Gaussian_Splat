@@ -35,6 +35,7 @@ Runtime artifacts are placed beneath the configured `output_dir`, never in packa
 - [Architecture](docs/architecture.md)
 - [Coordinate frames](docs/coordinate_frames.md)
 - [Dataset evaluation](docs/datasets.md)
+- [Real VIO backends](docs/real_vio.md)
 - [Common types](src/ariadne/common/README.md)
 
 ## Dataset evaluation

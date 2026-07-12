@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 evaluation = [
+  "pillow>=11,<13",
   "rosbags>=0.10,<1",
   "wandb>=0.22,<1",
 ]

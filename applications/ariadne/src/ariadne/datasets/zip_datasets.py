@@ -56,9 +56,7 @@ def evaluate_miluv(path: Path) -> DatasetEvaluation:
     ground_truth_ends: list[float] = []
     with zipfile.ZipFile(path) as handle:
         for agent in agents:
-            imu_member = next(
-                (name for name in names if f"/{agent}/imu_cam.csv" in name), None
-            )
+            imu_member = next((name for name in names if f"/{agent}/imu_cam.csv" in name), None)
             mocap_member = next((name for name in names if f"/{agent}/mocap.csv" in name), None)
             color_names = [name for name in names if f"/{agent}/color/" in name]
             color_timestamps: list[float] = []
@@ -69,9 +67,10 @@ def evaluate_miluv(path: Path) -> DatasetEvaluation:
                     continue
             imu_timestamps: list[float] = []
             if imu_member is not None:
-                with handle.open(imu_member) as raw, io.TextIOWrapper(
-                    raw, encoding="utf-8"
-                ) as text:
+                with (
+                    handle.open(imu_member) as raw,
+                    io.TextIOWrapper(raw, encoding="utf-8") as text,
+                ):
                     imu_timestamps = [float(row["timestamp"]) for row in csv.DictReader(text)]
             if imu_timestamps and color_timestamps:
                 sync_errors.extend(
@@ -83,9 +82,10 @@ def evaluate_miluv(path: Path) -> DatasetEvaluation:
             mocap_timestamps: list[float] = []
             mocap_positions: list[list[float]] = []
             if mocap_member is not None:
-                with handle.open(mocap_member) as raw, io.TextIOWrapper(
-                    raw, encoding="utf-8"
-                ) as text:
+                with (
+                    handle.open(mocap_member) as raw,
+                    io.TextIOWrapper(raw, encoding="utf-8") as text,
+                ):
                     for row in csv.DictReader(text):
                         mocap_timestamps.append(float(row["timestamp"]))
                         mocap_positions.append(

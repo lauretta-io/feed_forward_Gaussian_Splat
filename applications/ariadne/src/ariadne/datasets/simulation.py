@@ -49,8 +49,7 @@ def evaluate_simulation(seed: int) -> DatasetEvaluation:
             "vio_final_drift_m": raw_final,
             "corrected_final_drift_m": corrected_final,
             "drift_improvement_percent": (1.0 - corrected_final / raw_final) * 100.0,
-            "dynamic_false_static_rate": static_false_insertions
-            / max(int(dynamic_truth.sum()), 1),
+            "dynamic_false_static_rate": static_false_insertions / max(int(dynamic_truth.sum()), 1),
             "recovery_packets": int(packets[:, 1000:1100].sum()),
             "replay_hash": replay_hash,
         },
