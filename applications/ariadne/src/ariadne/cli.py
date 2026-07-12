@@ -13,6 +13,7 @@ from time import perf_counter_ns
 
 from pydantic import ValidationError
 
+from ariadne.benchmarks import run_phase1_benchmark
 from ariadne.common import FrameId, TransformSE3
 from ariadne.config import AriadneConfig, load_config
 from ariadne.datasets import evaluate_dataset
@@ -81,7 +82,17 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--scenario", required=True)
 
     benchmark = subparsers.add_parser("benchmark", help="run a benchmark suite")
-    benchmark.add_argument("--suite", choices=("smoke",), required=True)
+    benchmark.add_argument("--suite", choices=("smoke", "phase1"), required=True)
+    benchmark.add_argument("--output")
+    benchmark.add_argument("--seed", type=int, default=7)
+    benchmark.add_argument(
+        "--wandb-mode", choices=("disabled", "offline", "online"), default="disabled"
+    )
+    benchmark.add_argument("--wandb-project", default="gaussiansplat_test")
+    benchmark.add_argument("--wandb-entity")
+    benchmark.add_argument("--wandb-name")
+    benchmark.add_argument("--wandb-group", default="ariadne-phase1")
+    benchmark.add_argument("--wandb-tags", nargs="*", default=[])
 
     evaluate = subparsers.add_parser("evaluate", help="evaluate an ARIADNE dataset replay")
     evaluate.add_argument(
@@ -113,7 +124,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "simulate":
             _run_probe(_config_command(args.scenario, "simulation"))
         elif args.command == "benchmark":
-            print(json.dumps(_smoke_benchmark()))
+            if args.suite == "smoke":
+                print(json.dumps(_smoke_benchmark()))
+            else:
+                result = run_phase1_benchmark(args.seed)
+                output_path = Path(args.output or "outputs/ariadne/phase1/benchmark.json")
+                result.write_json(output_path)
+                run_url = log_evaluation_to_wandb(
+                    result,
+                    output_path,
+                    mode=args.wandb_mode,
+                    project=args.wandb_project,
+                    entity=args.wandb_entity,
+                    name=args.wandb_name,
+                    group=args.wandb_group,
+                    tags=["phase1", *args.wandb_tags],
+                    job_type="model-benchmark",
+                )
+                payload = result.to_dict()
+                payload["report_path"] = str(output_path)
+                payload["wandb_url"] = run_url
+                print(json.dumps(payload, sort_keys=True))
+                return 0 if result.status == "passed" else 1
         elif args.command == "evaluate":
             result = evaluate_dataset(
                 args.dataset,

@@ -18,6 +18,7 @@ def log_evaluation_to_wandb(
     name: str | None,
     group: str | None,
     tags: list[str],
+    job_type: str = "dataset-test",
 ) -> str | None:
     if mode == "disabled":
         return None
@@ -32,7 +33,7 @@ def log_evaluation_to_wandb(
         group=group,
         tags=["ariadne", "dataset-evaluation", result.dataset, *tags],
         mode=mode,
-        job_type="dataset-test",
+        job_type=job_type,
         config={
             "dataset": result.dataset,
             "agents": list(result.agents),

@@ -42,3 +42,19 @@ python applications/ariadne/scripts/run_dataset_sequence.py \
 
 W&B receives metrics and reports only. It does not receive raw images, ROS bags, archives, or
 credentials.
+
+## Replicating another clone
+
+The shell entry point below updates the current branch from `origin`, installs evaluation
+dependencies, downloads and verifies every file in the representative corpus, extracts the
+D2SLAM archive, and regenerates ignored evaluation outputs:
+
+```bash
+applications/ariadne/scripts/replicate_ignored_assets.sh \
+  --wandb-mode online \
+  --wandb-project gaussiansplat_test
+```
+
+Use `--skip-pull` when testing local uncommitted changes. The script is resumable and safe to run
+again: complete files are revalidated by expected size and publisher checksum. Clone-local `.env`
+credentials are loaded when present but are never copied or generated.

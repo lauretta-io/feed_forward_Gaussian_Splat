@@ -42,6 +42,15 @@ class CliIntegrationTest(unittest.TestCase):
             ("simulate", "--scenario", "configs/simulation/two_node.yaml"),
             ("benchmark", "--suite", "smoke"),
             (
+                "benchmark",
+                "--suite",
+                "phase1",
+                "--output",
+                "phase1.json",
+                "--wandb-mode",
+                "disabled",
+            ),
+            (
                 "evaluate",
                 "--dataset",
                 "simulation",
@@ -63,9 +72,13 @@ class CliIntegrationTest(unittest.TestCase):
                     payload = json.loads(result.stdout)
                     self.assertIn(payload["status"], ("ready", "passed"))
                     if arguments[0] == "benchmark":
-                        self.assertEqual(payload["iterations"], 1_000)
-                        self.assertGreater(payload["transform_round_trip_ns"], 0)
-                        self.assertGreater(payload["peak_traced_bytes"], 0)
+                        if arguments[2] == "smoke":
+                            self.assertEqual(payload["iterations"], 1_000)
+                            self.assertGreater(payload["transform_round_trip_ns"], 0)
+                            self.assertGreater(payload["peak_traced_bytes"], 0)
+                        else:
+                            self.assertEqual(payload["dataset"], "phase1-reference")
+                            self.assertTrue((Path(directory) / "phase1.json").is_file())
                     if arguments[0] == "evaluate":
                         self.assertEqual(payload["dataset"], "simulation")
                         self.assertTrue((Path(directory) / "simulation.json").is_file())
