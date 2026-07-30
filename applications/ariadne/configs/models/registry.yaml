@@ -1,0 +1,26 @@
+models:
+  gradient_patch_reference:
+    version: 1.0.0
+    license: internal-reference
+    backend: numpy
+    task: geometric_features
+  spatial_pyramid_reference:
+    version: 1.0.0
+    license: internal-reference
+    backend: numpy
+    task: semantic_embedding
+  object_gaussian_reference:
+    version: 1.0.0
+    license: internal-reference
+    backend: numpy
+    task: gaussian_reconstruction
+  openvins:
+    version: pinned-container
+    license: GPL-3.0
+    backend: external-process
+    task: visual_inertial_odometry
+  orbslam3:
+    version: pinned-container
+    license: GPL-3.0
+    backend: external-process
+    task: visual_inertial_odometry

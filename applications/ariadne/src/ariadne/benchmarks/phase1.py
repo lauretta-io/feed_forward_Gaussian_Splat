@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import perf_counter_ns
 
 import numpy as np
@@ -123,11 +125,20 @@ def _tracking_and_association() -> tuple[dict[str, float | int], list[dict[str, 
         )
         dynamic_state = static_filter.update(dynamic)
         false_static += int(dynamic_state.state is StaticTrackState.STATIC_CONFIRMED)
+    with TemporaryDirectory(prefix="ariadne-association-") as temporary_directory:
+        snapshot = associator.write_json(Path(temporary_directory) / "association.json")
+        restored = CrossAgentAssociator.read_json(snapshot)
+    global_ids_stable = [item.global_id for item in restored.objects] == [
+        item.global_id for item in associator.objects
+    ]
     return (
         {
             "confirmed_static_observations": confirmed_static,
             "false_static_insertions": false_static,
             "global_object_count": len(associator.objects),
+            "association_evidence_count": len(associator.evidence),
+            "association_global_ids_stable": int(global_ids_stable),
+            "association_snapshot_restored": restored.metrics["restores"],
         },
         states,
     )
@@ -205,6 +216,7 @@ def run_phase1_benchmark(seed: int = 7) -> DatasetEvaluation:
         and best_feature_separation > 0
         and tracking_metrics["false_static_insertions"] == 0
         and tracking_metrics["global_object_count"] == 1
+        and tracking_metrics["association_global_ids_stable"] == 1
         and graph_metrics["pose_graph_position_rmse_m"] < 0.25
         and graph_metrics["pose_graph_rejected_constraints"] >= 1
     )

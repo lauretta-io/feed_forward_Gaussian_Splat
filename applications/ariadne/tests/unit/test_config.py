@@ -20,6 +20,8 @@ class ConfigTest(unittest.TestCase):
             with self.subTest(path=relative_path):
                 config = load_config(PROJECT_ROOT / relative_path)
                 self.assertEqual(config.runtime.role, role)
+                if role == "simulation":
+                    self.assertEqual(config.simulation.partition_duration_seconds, 60.0)
 
     def test_unknown_fields_are_rejected(self) -> None:
         content = """

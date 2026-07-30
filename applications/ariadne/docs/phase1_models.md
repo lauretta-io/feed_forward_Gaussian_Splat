@@ -18,9 +18,10 @@ and deterministic replay before external production backends are installed.
 | Association | cosine and distance gates | FAISS plus graph assignment | global IDs, merge/split rates |
 | Pose graph | robust translation IRLS | GTSAM or Ceres SE(3) | RMSE, rejected constraints |
 
-The reference pose graph intentionally optimizes translations only. It tests incremental graph
-construction and robust rejection. A production optimizer must implement full SE(3), covariance
-propagation, disconnected subgraphs, and correction deltas.
+The original Phase 1 microbenchmark retains a translation-only IRLS graph so its historical metric
+is comparable. The integrated global-scene gate uses `RobustSE3PoseGraph`, which propagates full
+SE(3) transforms and covariance across disconnected components and rejects inconsistent loops.
+Production promotion still requires nonlinear refinement and real multi-agent calibration.
 
 ## Running
 

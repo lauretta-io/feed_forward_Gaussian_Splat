@@ -16,7 +16,6 @@ from experiments.resplat_u2net_saliency.common import (
     load_mask,
     log_wandb,
     save_difference,
-    save_saliency,
     write_comparison_csv,
 )
 from experiments.resplat_u2net_saliency.train_u2net_baseline import run_baseline

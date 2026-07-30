@@ -160,7 +160,7 @@ def extract_embeddings(args: argparse.Namespace) -> dict:
                 captured["embedding"] = inputs[0].detach().float().cpu()
 
             handle = encoder.gaussian_regressor.register_forward_pre_hook(hook)
-            with Timer() as timer:
+            with Timer(args.device) as timer:
                 with torch.no_grad():
                     _ = encoder(batch["context"], global_step=0, deterministic=True, visualization_dump=None)
             handle.remove()

@@ -113,9 +113,14 @@ def load_u2net_checkpoint(
         cleaned = {}
         for key, value in state.items():
             cleaned[key.removeprefix("module.").removeprefix("model.")] = value
+        matching_parameters = set(cleaned).intersection(dict(model.named_parameters()))
+        if not matching_parameters:
+            raise ValueError(
+                f"Checkpoint {path} has no parameter keys matching this model; "
+                "refusing to evaluate with randomly initialized weights"
+            )
         missing, unexpected = model.load_state_dict(cleaned, strict=strict)
         if missing or unexpected:
             return f"checkpoint_loaded_partial:{path}"
         return f"checkpoint_loaded:{path}"
     raise ValueError(f"Unsupported checkpoint format: {path}")
-

@@ -51,6 +51,42 @@ class CliIntegrationTest(unittest.TestCase):
                 "disabled",
             ),
             (
+                "benchmark",
+                "--suite",
+                "exchange",
+                "--output",
+                "exchange.json",
+                "--wandb-mode",
+                "disabled",
+            ),
+            (
+                "benchmark",
+                "--suite",
+                "global-scene",
+                "--output",
+                "global-scene.json",
+                "--wandb-mode",
+                "disabled",
+            ),
+            (
+                "benchmark",
+                "--suite",
+                "operations",
+                "--output",
+                "operations.json",
+                "--wandb-mode",
+                "disabled",
+            ),
+            (
+                "benchmark",
+                "--suite",
+                "end-to-end",
+                "--output",
+                "end-to-end.json",
+                "--wandb-mode",
+                "disabled",
+            ),
+            (
                 "evaluate",
                 "--dataset",
                 "simulation",
@@ -77,8 +113,24 @@ class CliIntegrationTest(unittest.TestCase):
                             self.assertGreater(payload["transform_round_trip_ns"], 0)
                             self.assertGreater(payload["peak_traced_bytes"], 0)
                         else:
-                            self.assertEqual(payload["dataset"], "phase1-reference")
-                            self.assertTrue((Path(directory) / "phase1.json").is_file())
+                            self.assertIn(
+                                payload["dataset"],
+                                (
+                                    "phase1-reference",
+                                    "exchange-reference",
+                                    "global-scene-reference",
+                                    "operations-reference",
+                                    "end-to-end-reference",
+                                ),
+                            )
+                            report_name = {
+                                "phase1": "phase1.json",
+                                "exchange": "exchange.json",
+                                "global-scene": "global-scene.json",
+                                "operations": "operations.json",
+                                "end-to-end": "end-to-end.json",
+                            }[arguments[2]]
+                            self.assertTrue((Path(directory) / report_name).is_file())
                     if arguments[0] == "evaluate":
                         self.assertEqual(payload["dataset"], "simulation")
                         self.assertTrue((Path(directory) / "simulation.json").is_file())

@@ -120,7 +120,7 @@ def run_baseline(args: argparse.Namespace | SimpleNamespace) -> RunSummary:
     with torch.no_grad():
         for batch in DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=saliency_collate):
             image = batch["image"].to(device)
-            with Timer() as timer:
+            with Timer(device) as timer:
                 pred = model(image)
             per_frame_latency = timer.elapsed / image.shape[0]
             latencies.extend([per_frame_latency] * image.shape[0])

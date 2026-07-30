@@ -13,12 +13,18 @@ from time import perf_counter_ns
 
 from pydantic import ValidationError
 
-from ariadne.benchmarks import run_phase1_benchmark
+from ariadne.benchmarks import (
+    run_exchange_benchmark,
+    run_global_scene_benchmark,
+    run_operations_benchmark,
+    run_phase1_benchmark,
+)
 from ariadne.common import FrameId, TransformSE3
 from ariadne.config import AriadneConfig, load_config
 from ariadne.datasets import evaluate_dataset
 from ariadne.evaluation import log_evaluation_to_wandb
 from ariadne.logging import configure_logging
+from ariadne.runtime import run_reference_system
 
 LOGGER = logging.getLogger("ariadne")
 
@@ -82,7 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
     simulate.add_argument("--scenario", required=True)
 
     benchmark = subparsers.add_parser("benchmark", help="run a benchmark suite")
-    benchmark.add_argument("--suite", choices=("smoke", "phase1"), required=True)
+    benchmark.add_argument(
+        "--suite",
+        choices=("smoke", "phase1", "exchange", "global-scene", "operations", "end-to-end"),
+        required=True,
+    )
     benchmark.add_argument("--output")
     benchmark.add_argument("--seed", type=int, default=7)
     benchmark.add_argument(
@@ -127,8 +137,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.suite == "smoke":
                 print(json.dumps(_smoke_benchmark()))
             else:
-                result = run_phase1_benchmark(args.seed)
-                output_path = Path(args.output or "outputs/ariadne/phase1/benchmark.json")
+                benchmark_runners = {
+                    "phase1": run_phase1_benchmark,
+                    "exchange": run_exchange_benchmark,
+                    "global-scene": run_global_scene_benchmark,
+                    "operations": run_operations_benchmark,
+                    "end-to-end": run_reference_system,
+                }
+                result = benchmark_runners[args.suite](args.seed)
+                default_output = f"outputs/ariadne/{args.suite}/benchmark.json"
+                output_path = Path(args.output or default_output)
                 result.write_json(output_path)
                 run_url = log_evaluation_to_wandb(
                     result,
@@ -138,7 +156,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     entity=args.wandb_entity,
                     name=args.wandb_name,
                     group=args.wandb_group,
-                    tags=["phase1", *args.wandb_tags],
+                    tags=[args.suite, *args.wandb_tags],
                     job_type="model-benchmark",
                 )
                 payload = result.to_dict()

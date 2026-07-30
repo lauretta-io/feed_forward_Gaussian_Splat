@@ -3,10 +3,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from ariadne.backends import TrajectoryPose, evaluate_trajectory, export_euroc
+from ariadne.backends import OpenVinsAdapter, TrajectoryPose, evaluate_trajectory, export_euroc
 from ariadne.common import Timestamp
 from ariadne.replay import GroundTruthPose, ImageFrame, ImuSample, ReplayBatch
 
@@ -47,6 +48,38 @@ class ExternalVioTest(unittest.TestCase):
             self.assertTrue((root / "mav0/cam0/data/1000000000.png").is_file())
             self.assertTrue((root / "mav0/cam1/data/1000000000.png").is_file())
             self.assertIn("1000000000", (root / "mav0/imu0/data.csv").read_text())
+
+    def test_successful_process_without_matched_ground_truth_fails(self) -> None:
+        truth = tuple(
+            GroundTruthPose(
+                Timestamp(index * 1_000_000_000),
+                np.array([index, 0, 0]),
+                np.array([0, 0, 0, 1]),
+            )
+            for index in range(3)
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "trajectory.txt").write_text(
+                "\n".join(
+                    f"{100 + index}.0 {index} 0 0 0 0 0 1"
+                    for index in range(3)
+                ),
+                encoding="utf-8",
+            )
+            with patch("ariadne.backends.external_vio.subprocess.run") as run:
+                run.return_value.returncode = 0
+                run.return_value.stdout = ""
+                run.return_value.stderr = ""
+                result = OpenVinsAdapter().run(
+                    bag=root / "input.bag",
+                    config=root / "config.yaml",
+                    truth=truth,
+                    output_dir=root,
+                )
+
+        self.assertEqual(result.metrics["matched_pose_count"], 0)
+        self.assertEqual(result.status, "failed")
 
 
 if __name__ == "__main__":

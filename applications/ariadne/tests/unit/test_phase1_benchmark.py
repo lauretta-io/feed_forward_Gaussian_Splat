@@ -12,6 +12,9 @@ class Phase1BenchmarkTest(unittest.TestCase):
         self.assertLess(first.metrics["fused_ate_rmse_m"], first.metrics["imu_ate_rmse_m"])
         self.assertEqual(first.metrics["false_static_insertions"], 0)
         self.assertEqual(first.metrics["global_object_count"], 1)
+        self.assertGreater(first.metrics["association_evidence_count"], 0)
+        self.assertEqual(first.metrics["association_global_ids_stable"], 1)
+        self.assertEqual(first.metrics["association_snapshot_restored"], 1)
         self.assertEqual(
             first.metrics["pose_graph_rejected_constraints"],
             second.metrics["pose_graph_rejected_constraints"],

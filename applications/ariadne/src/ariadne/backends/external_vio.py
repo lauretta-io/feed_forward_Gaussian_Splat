@@ -209,7 +209,15 @@ class _ExternalProcessAdapter:
         metrics = evaluate_trajectory(trajectory, truth)
         metrics["elapsed_seconds"] = elapsed
         metrics["return_code"] = return_code if return_code is not None else -1
-        status = "passed" if return_code == 0 and len(trajectory) >= 3 else "failed"
+        accuracy_metrics = ("ate_rmse_m", "rpe_rmse_m", "final_drift_m")
+        has_valid_accuracy = int(metrics["matched_pose_count"]) >= 3 and all(
+            np.isfinite(float(metrics[name])) for name in accuracy_metrics
+        )
+        status = (
+            "passed"
+            if return_code == 0 and len(trajectory) >= 3 and has_valid_accuracy
+            else "failed"
+        )
         return ExternalVioResult(
             self.backend_name,
             status,

@@ -18,7 +18,7 @@ def evaluate_simulation(seed: int) -> DatasetEvaluation:
     clock_ppm = np.array([-18.0, 7.0, 31.0])
     local_clocks = timestamps[None, :] * (1.0 + clock_ppm[:, None] * 1e-6)
     packets = rng.random((node_count, tick_count)) >= 0.12
-    packets[:, 800:1000] = False
+    packets[:, 400:1600] = False
     vio_drift_m = 0.003 * timestamps
     corrected_drift_m = vio_drift_m * 0.25
     dynamic_truth = rng.random(500) < 0.35
@@ -42,7 +42,7 @@ def evaluate_simulation(seed: int) -> DatasetEvaluation:
             "seed": seed,
             "tick_count": tick_count,
             "packet_loss_rate": float(1.0 - packets.mean()),
-            "partition_duration_seconds": 10.0,
+            "partition_duration_seconds": 60.0,
             "max_clock_skew_ms": float(
                 (local_clocks[:, -1].max() - local_clocks[:, -1].min()) * 1000
             ),
@@ -50,7 +50,7 @@ def evaluate_simulation(seed: int) -> DatasetEvaluation:
             "corrected_final_drift_m": corrected_final,
             "drift_improvement_percent": (1.0 - corrected_final / raw_final) * 100.0,
             "dynamic_false_static_rate": static_false_insertions / max(int(dynamic_truth.sum()), 1),
-            "recovery_packets": int(packets[:, 1000:1100].sum()),
+            "recovery_packets": int(packets[:, 1600:1700].sum()),
             "replay_hash": replay_hash,
         },
         details={"scenario": "three_wingmen_packet_loss_outage_drift_dynamic_objects"},

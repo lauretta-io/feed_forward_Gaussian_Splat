@@ -1,6 +1,10 @@
 """Temporal tracking and cross-agent association."""
 
-from ariadne.tracking.association import CrossAgentAssociator, GlobalObject
+from ariadne.tracking.association import (
+    AssociationEvidence,
+    CrossAgentAssociator,
+    GlobalObject,
+)
 from ariadne.tracking.static_filter import (
     StaticTrackState,
     TemporalStaticFilter,
@@ -9,6 +13,7 @@ from ariadne.tracking.static_filter import (
 )
 
 __all__ = [
+    "AssociationEvidence",
     "CrossAgentAssociator",
     "GlobalObject",
     "StaticTrackState",

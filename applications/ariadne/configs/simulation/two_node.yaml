@@ -8,3 +8,5 @@ simulation:
   seed: 7
   wingman_count: 2
   duration_seconds: 1.0
+  packet_loss_probability: 0.12
+  partition_duration_seconds: 60.0

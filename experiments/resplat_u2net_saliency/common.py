@@ -219,14 +219,18 @@ def write_comparison_csv(path: Path, summaries: list[RunSummary]) -> None:
 
 
 class Timer:
+    def __init__(self, device: torch.device | str) -> None:
+        self.device = torch.device(device)
+
+    def _synchronize(self) -> None:
+        if self.device.type == "cuda" and torch.cuda.is_available():
+            torch.cuda.synchronize(device=self.device)
+
     def __enter__(self):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        self._synchronize()
         self.start = time.perf_counter()
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        self._synchronize()
         self.elapsed = time.perf_counter() - self.start
-

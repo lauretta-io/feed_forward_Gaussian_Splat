@@ -149,7 +149,7 @@ def run_resplat(args: argparse.Namespace | SimpleNamespace) -> RunSummary:
         for batch in DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=saliency_collate):
             embedding = batch["embedding"].to(device)
             image = batch["image"].to(device)
-            with Timer() as timer:
+            with Timer(device) as timer:
                 pred = model(embedding, output_size=image.shape[-2:])
             per_frame_latency = timer.elapsed / embedding.shape[0]
             latencies.extend([per_frame_latency] * embedding.shape[0])

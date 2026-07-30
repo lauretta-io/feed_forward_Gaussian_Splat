@@ -1,0 +1,16 @@
+profiles:
+  cpu_reference:
+    minimum_cpu_cores: 1
+    minimum_memory_bytes: 536870912
+    required_accelerators: []
+    minimum_cameras: 0
+  wingman_jetson:
+    minimum_cpu_cores: 4
+    minimum_memory_bytes: 4294967296
+    required_accelerators: [cuda]
+    minimum_cameras: 1
+  intelligence_gpu:
+    minimum_cpu_cores: 8
+    minimum_memory_bytes: 17179869184
+    required_accelerators: [cuda]
+    minimum_cameras: 0
