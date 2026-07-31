@@ -1,0 +1,25 @@
+run:
+  name: resplat-u2net
+  wandb_project: gaussiansplat_test
+  wandb_mode: offline
+
+data:
+  embedding_manifest: experiments/resplat_u2net_saliency/outputs/embeddings/manifest.json
+  mask_dir: null
+  max_frames: 10
+  image_size: [256, 448]
+
+model:
+  adapter_channels: 128
+  decoder_base_channels: 32
+  token_grid_size: null
+
+train:
+  epochs: 0
+  batch_size: 1
+  lr: 0.0001
+  weight_decay: 0.0001
+
+eval:
+  saliency_threshold: 0.5
+  output_dir: experiments/resplat_u2net_saliency/outputs

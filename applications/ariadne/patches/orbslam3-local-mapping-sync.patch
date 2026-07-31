@@ -1,0 +1,141 @@
+diff --git a/Examples/Stereo-Inertial/stereo_inertial_euroc.cc b/Examples/Stereo-Inertial/stereo_inertial_euroc.cc
+index bb52223..f47a3b4 100644
+--- a/Examples/Stereo-Inertial/stereo_inertial_euroc.cc
++++ b/Examples/Stereo-Inertial/stereo_inertial_euroc.cc
+@@ -22,6 +22,7 @@
+ #include<iomanip>
+ #include<chrono>
+ #include <ctime>
++#include <cstdlib>
+ #include <sstream>
+ 
+ #include <opencv2/core/core.hpp>
+@@ -47,6 +48,11 @@ int main(int argc, char **argv)
+         return 1;
+     }
+ 
++    const char* sync_env = std::getenv("ARIADNE_ORBSLAM3_SYNC_LOCAL_MAPPING");
++    const bool sync_local_mapping = sync_env != NULL && string(sync_env) == "1";
++    if(sync_local_mapping)
++        cout << "Controlled offline local-mapping synchronization enabled" << endl;
++
+     const int num_seq = (argc-3)/2;
+     cout << "num_seq = " << num_seq << endl;
+     bool bFileName= (((argc-3) % 2) == 1);
+@@ -183,6 +189,12 @@ int main(int argc, char **argv)
+ 
+             // Pass the images to the SLAM system
+             SLAM.TrackStereo(imLeft,imRight,tframe,vImuMeas);
++            if(sync_local_mapping && !SLAM.WaitForLocalMapping(120.0))
++            {
++                cerr << "Timed out waiting for local mapping after frame " << ni << endl;
++                SLAM.Shutdown();
++                return 2;
++            }
+ 
+     #ifdef COMPILEDWITHC11
+             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+@@ -206,7 +218,7 @@ int main(int argc, char **argv)
+             else if(ni>0)
+                 T = tframe-vTimestampsCam[seq][ni-1];
+ 
+-            if(ttrack<T)
++            if(!sync_local_mapping && ttrack<T)
+                 usleep((T-ttrack)*1e6); // 1e6
+         }
+ 
+diff --git a/Examples/Stereo/stereo_euroc.cc b/Examples/Stereo/stereo_euroc.cc
+index 1250f2e..8e210b8 100644
+--- a/Examples/Stereo/stereo_euroc.cc
++++ b/Examples/Stereo/stereo_euroc.cc
+@@ -21,6 +21,7 @@
+ #include<fstream>
+ #include<iomanip>
+ #include<chrono>
++#include<cstdlib>
+ 
+ #include<opencv2/core/core.hpp>
+ 
+@@ -40,6 +41,11 @@ int main(int argc, char **argv)
+         return 1;
+     }
+ 
++    const char* sync_env = std::getenv("ARIADNE_ORBSLAM3_SYNC_LOCAL_MAPPING");
++    const bool sync_local_mapping = sync_env != NULL && string(sync_env) == "1";
++    if(sync_local_mapping)
++        cout << "Controlled offline local-mapping synchronization enabled" << endl;
++
+     const int num_seq = (argc-3)/2;
+     cout << "num_seq = " << num_seq << endl;
+     bool bFileName= (((argc-3) % 2) == 1);
+@@ -130,6 +136,12 @@ int main(int argc, char **argv)
+ 
+             // Pass the images to the SLAM system
+             SLAM.TrackStereo(imLeft,imRight,tframe, vector<ORB_SLAM3::IMU::Point>(), vstrImageLeft[seq][ni]);
++            if(sync_local_mapping && !SLAM.WaitForLocalMapping(120.0))
++            {
++                cerr << "Timed out waiting for local mapping after frame " << ni << endl;
++                SLAM.Shutdown();
++                return 2;
++            }
+ 
+     #ifdef COMPILEDWITHC11
+             std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
+@@ -153,7 +165,7 @@ int main(int argc, char **argv)
+             else if(ni>0)
+                 T = tframe-vTimestampsCam[seq][ni-1];
+ 
+-            if(ttrack<T)
++            if(!sync_local_mapping && ttrack<T)
+                 usleep((T-ttrack)*1e6); // 1e6
+         }
+ 
+diff --git a/include/System.h b/include/System.h
+index 872c86e..3d44c31 100644
+--- a/include/System.h
++++ b/include/System.h
+@@ -140,6 +140,9 @@ public:
+     void Shutdown();
+     bool isShutDown();
+ 
++    // Controlled offline mode: wait until local mapping has drained its queue and is idle.
++    bool WaitForLocalMapping(const double timeout_seconds);
++
+     // Save camera trajectory in the TUM RGB-D dataset format.
+     // Only for stereo and RGB-D. This method does not work for monocular.
+     // Call first Shutdown()
+diff --git a/src/System.cc b/src/System.cc
+index 60d9c51..ef6264b 100644
+--- a/src/System.cc
++++ b/src/System.cc
+@@ -20,6 +20,7 @@
+ 
+ #include "System.h"
+ #include "Converter.h"
++#include <chrono>
+ #include <thread>
+ #include <pangolin/pangolin.h>
+ #include <iomanip>
+@@ -566,6 +567,22 @@ bool System::isShutDown() {
+     return mbShutDown;
+ }
+ 
++bool System::WaitForLocalMapping(const double timeout_seconds)
++{
++    if(timeout_seconds <= 0.0)
++        return false;
++
++    const auto deadline = std::chrono::steady_clock::now()
++        + std::chrono::duration<double>(timeout_seconds);
++    while(std::chrono::steady_clock::now() < deadline)
++    {
++        if(mpLocalMapper->KeyframesInQueue() == 0 && mpLocalMapper->AcceptKeyFrames())
++            return true;
++        usleep(1000);
++    }
++    return mpLocalMapper->KeyframesInQueue() == 0 && mpLocalMapper->AcceptKeyFrames();
++}
++
+ void System::SaveTrajectoryTUM(const string &filename)
+ {
+     cout << endl << "Saving camera trajectory to " << filename << " ..." << endl;

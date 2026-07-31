@@ -1,0 +1,80 @@
+runtime:
+  role: intelligence
+  node_id: intelligence_01
+  log_level: INFO
+  json_logs: false
+  output_dir: outputs/ariadne/intelligence_01
+intelligence:
+  global_frame: global
+  observation_retention_seconds: 60.0
+  observation_max_entries: 8192
+  observation_sequence_history: 4096
+  observation_max_future_skew_seconds: 1.0
+  observation_snapshot_path: outputs/ariadne/intelligence_01/observations.json
+  observation_journal_directory: outputs/ariadne/intelligence_01/observation-journal
+  observation_journal_entries_per_segment: 1024
+  observation_journal_max_segments: 8
+  transport:
+    queue_capacity: 512
+    max_payload_bytes: 64000
+    packet_ttl_seconds: 60.0
+    max_retries: 3
+    retry_interval_seconds: 0.25
+    dedupe_entries: 4096
+  splatting:
+    backend: reference
+    device: cpu
+    max_observations_per_update: 64
+    max_objects_per_update: 32
+    max_estimated_memory_bytes: 268435456
+    max_registered_backends: 16
+    max_primitives: 10000
+    max_history: 16
+    snapshot_directory: outputs/ariadne/intelligence_01/global-scene
+    max_persisted_snapshots: 16
+  association:
+    max_distance_m: 1.5
+    min_cosine_similarity: 0.8
+    max_objects: 4096
+    max_evidence: 8192
+    snapshot_path: outputs/ariadne/intelligence_01/association.json
+  pose_graph:
+    translation_gate_m: 0.75
+    rotation_gate_rad: 0.35
+    max_constraints: 16384
+    max_results: 32
+    snapshot_path: outputs/ariadne/intelligence_01/pose-graph.json
+  correction:
+    max_translation_step_m: 0.5
+    max_total_translation_m: 10.0
+    max_rotation_step_rad: 0.1
+    max_total_rotation_rad: 0.5
+    max_generated_history: 1024
+    max_applied_history: 4096
+    generator_snapshot_path: outputs/ariadne/intelligence_01/correction-generator.json
+    applier_snapshot_path: null
+    ttl_seconds: 60.0
+  correction_scheduling:
+    target_error_m: 0.1
+    target_orientation_error_rad: 0.05
+    nominal_interval_seconds: 9.0
+    minimum_interval_seconds: 2.0
+    maximum_interval_seconds: 60.0
+    evaluation_period_seconds: 1.0
+    max_corrections_per_cycle: 2
+  context:
+    max_age_seconds: 5.0
+  planning:
+    minimum_battery_fraction: 0.2
+    minimum_link_quality: 0.15
+    handoff_ttl_seconds: 60.0
+    fail_closed_on_degraded_context: true
+  telemetry:
+    max_distribution_samples: 1024
+    max_metrics: 256
+    max_events: 1024
+  security:
+    max_envelope_ttl_seconds: 60.0
+    replay_window_entries: 4096
+  deployment:
+    profile: cpu_reference

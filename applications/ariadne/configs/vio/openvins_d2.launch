@@ -1,0 +1,25 @@
+<launch>
+  <arg name="config_path" />
+  <arg name="bag" />
+  <arg name="path_est" />
+  <arg name="path_time" />
+  <arg name="dosave" default="true" />
+  <arg name="dotime" default="true" />
+  <arg name="dolivetraj" default="false" />
+
+  <node pkg="image_transport" type="republish" name="decode_cam0"
+        args="compressed in:=/cam0/image_raw raw out:=/cam0/image_raw" />
+  <node pkg="image_transport" type="republish" name="decode_cam1"
+        args="compressed in:=/cam1/image_raw raw out:=/cam1/image_raw" />
+
+  <include file="$(find ov_msckf)/launch/subscribe.launch">
+    <arg name="config_path" value="$(arg config_path)" />
+    <arg name="bag" value="$(arg bag)" />
+    <arg name="dobag" value="true" />
+    <arg name="dosave" value="$(arg dosave)" />
+    <arg name="path_est" value="$(arg path_est)" />
+    <arg name="dotime" value="$(arg dotime)" />
+    <arg name="path_time" value="$(arg path_time)" />
+    <arg name="dolivetraj" value="$(arg dolivetraj)" />
+  </include>
+</launch>

@@ -1,0 +1,18 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates cmake git libeigen3-dev libopencv-dev libboost-serialization-dev libssl-dev \
+    libgl1-mesa-dev libglew-dev libpython3-dev libwayland-dev libxkbcommon-dev \
+    libegl1-mesa-dev libepoxy-dev python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch v0.6 https://github.com/stevenlovegrove/Pangolin.git /tmp/Pangolin && \
+    cmake -S /tmp/Pangolin -B /tmp/Pangolin/build -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_PANGOLIN_PYTHON=OFF -DBUILD_EXAMPLES=OFF && \
+    cmake --build /tmp/Pangolin/build --parallel 4 && \
+    cmake --install /tmp/Pangolin/build && \
+    rm -rf /tmp/Pangolin
+
+WORKDIR /opt/orbslam3
+CMD ["bash"]

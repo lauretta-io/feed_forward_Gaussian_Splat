@@ -1,0 +1,24 @@
+run:
+  name: baseline-u2net
+  wandb_project: gaussiansplat_test
+  wandb_mode: offline
+
+data:
+  image_dir: datasets/dl3dv-colmap-demo/02267acf6fb98de36173bf4e7db9734c8c421dcb00267e42964dc15134cbb1be/images_4
+  mask_dir: null
+  max_frames: 10
+  image_size: [256, 448]
+
+model:
+  model_size: u2net
+  checkpoint: null
+
+train:
+  epochs: 0
+  batch_size: 1
+  lr: 0.0001
+  weight_decay: 0.0001
+
+eval:
+  saliency_threshold: 0.5
+  output_dir: experiments/resplat_u2net_saliency/outputs

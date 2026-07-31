@@ -51,6 +51,10 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Clone-local links to ignored ARIADNE Gaussian output trees
+reports/global-gaussian-static
+reports/s3e-global-gaussian-static
+
 # Translations
 *.mo
 *.pot
@@ -176,3 +180,21 @@ CLAUDE.md
 debug*
 doc/
 notebooks/
+.wandb-cache/
+
+# Keep the ReSplat/U2-Net experiment source and empty output placeholders
+# trackable despite the broad datasets*/outputs* rules above.
+!experiments/resplat_u2net_saliency/datasets.py
+!experiments/resplat_u2net_saliency/outputs/
+experiments/resplat_u2net_saliency/outputs/**
+!experiments/resplat_u2net_saliency/outputs/**/
+!experiments/resplat_u2net_saliency/outputs/**/.gitkeep
+
+# ARIADNE dataset adapters, registry, and documentation are source files.
+!applications/ariadne/configs/datasets/
+!applications/ariadne/configs/datasets/**
+!applications/ariadne/docs/datasets.md
+!applications/ariadne/src/ariadne/datasets/
+!applications/ariadne/src/ariadne/datasets/**
+applications/ariadne/src/ariadne/datasets/__pycache__/
+applications/ariadne/src/ariadne/datasets/**/*.pyc
