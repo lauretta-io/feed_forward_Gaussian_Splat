@@ -47,11 +47,21 @@ intelligence:
   correction:
     max_translation_step_m: 0.5
     max_total_translation_m: 10.0
+    max_rotation_step_rad: 0.1
+    max_total_rotation_rad: 0.5
     max_generated_history: 1024
     max_applied_history: 4096
     generator_snapshot_path: outputs/ariadne/intelligence_01/correction-generator.json
     applier_snapshot_path: null
     ttl_seconds: 60.0
+  correction_scheduling:
+    target_error_m: 0.1
+    target_orientation_error_rad: 0.05
+    nominal_interval_seconds: 9.0
+    minimum_interval_seconds: 2.0
+    maximum_interval_seconds: 60.0
+    evaluation_period_seconds: 1.0
+    max_corrections_per_cycle: 2
   context:
     max_age_seconds: 5.0
   planning:

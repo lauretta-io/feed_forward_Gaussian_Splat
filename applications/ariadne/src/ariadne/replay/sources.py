@@ -37,6 +37,7 @@ class GroundTruthPose:
     timestamp: Timestamp
     position_m: npt.NDArray[np.float64]
     quaternion_xyzw: npt.NDArray[np.float64]
+    orientation_available: bool = True
 
     def __post_init__(self) -> None:
         position = np.asarray(self.position_m, dtype=np.float64)
@@ -45,6 +46,8 @@ class GroundTruthPose:
             raise ValueError("ground truth position and quaternion shapes are invalid")
         if not np.all(np.isfinite(position)) or not np.all(np.isfinite(quaternion)):
             raise ValueError("ground truth pose must be finite")
+        if not isinstance(self.orientation_available, bool):
+            raise ValueError("ground truth orientation availability must be boolean")
         object.__setattr__(self, "position_m", position.copy())
         object.__setattr__(self, "quaternion_xyzw", quaternion.copy())
 
@@ -80,6 +83,29 @@ def _validate_window(start_frame: int, max_frames: int) -> None:
 
 def _seconds_to_timestamp(value: str | float) -> Timestamp:
     return Timestamp(int(float(value) * 1e9))
+
+
+def read_ground_truth_poses(
+    path: Path,
+    *,
+    orientation_available: bool = True,
+) -> tuple[GroundTruthPose, ...]:
+    poses: list[GroundTruthPose] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        values = [float(value) for value in line.replace(",", " ").split()]
+        if len(values) < 8:
+            continue
+        poses.append(
+            GroundTruthPose(
+                _seconds_to_timestamp(values[0]),
+                np.asarray(values[1:4]),
+                np.asarray(values[4:8]),
+                orientation_available,
+            )
+        )
+    return tuple(poses)
 
 
 class MiluvReplaySource:
@@ -363,21 +389,7 @@ class RosbagReplaySource:
     def _external_truth(self) -> tuple[GroundTruthPose, ...]:
         if self.ground_truth_path is None or not self.ground_truth_path.is_file():
             return ()
-        poses: list[GroundTruthPose] = []
-        for line in self.ground_truth_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            values = [float(value) for value in line.replace(",", " ").split()]
-            if len(values) < 8:
-                continue
-            poses.append(
-                GroundTruthPose(
-                    _seconds_to_timestamp(values[0]),
-                    np.asarray(values[1:4]),
-                    np.asarray(values[4:8]),
-                )
-            )
-        return tuple(poses)
+        return read_ground_truth_poses(self.ground_truth_path)
 
 
 class S3EReplaySource(RosbagReplaySource):
@@ -390,6 +402,14 @@ class S3EReplaySource(RosbagReplaySource):
         self.calibration_path = self.calibration_root / f"{agent_id.lower()}.yaml"
         self.ground_truth_path = self.ground_truth_root / f"{agent_id.lower()}_gt.txt"
         return super().load(agent_id, start_frame=start_frame, max_frames=max_frames)
+
+    def _external_truth(self) -> tuple[GroundTruthPose, ...]:
+        if self.ground_truth_path is None or not self.ground_truth_path.is_file():
+            return ()
+        return read_ground_truth_poses(
+            self.ground_truth_path,
+            orientation_available=False,
+        )
 
 
 class D2SlamReplaySource(RosbagReplaySource):

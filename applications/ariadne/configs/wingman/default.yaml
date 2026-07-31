@@ -37,6 +37,8 @@ wingman:
   correction:
     max_translation_step_m: 0.5
     max_total_translation_m: 10.0
+    max_rotation_step_rad: 0.1
+    max_total_rotation_rad: 0.5
     max_generated_history: 1024
     max_applied_history: 4096
     generator_snapshot_path: null

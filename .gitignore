@@ -51,6 +51,10 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Clone-local links to ignored ARIADNE Gaussian output trees
+reports/global-gaussian-static
+reports/s3e-global-gaussian-static
+
 # Translations
 *.mo
 *.pot

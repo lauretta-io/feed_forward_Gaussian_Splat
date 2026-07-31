@@ -6,6 +6,8 @@ ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BACKEND_ROOT="${ARIADNE_BACKEND_ROOT:-$ROOT/.cache/ariadne/backends}"
 OPENVINS_COMMIT="69488123ed9362dd44b6f28e7f4680abbff1442b"
 ORBSLAM3_COMMIT="4452a3c4ab75b1cde34e5505a36ec3f9edcdc4c4"
+ORBSLAM3_PATCH="$ROOT/applications/ariadne/patches/orbslam3-headless-stereo.patch"
+ORBSLAM3_SYNC_PATCH="$ROOT/applications/ariadne/patches/orbslam3-local-mapping-sync.patch"
 BUILD="none"
 
 usage() {
@@ -41,6 +43,17 @@ OPENVINS_SOURCE="$OPENVINS_WS/src/open_vins"
 ORBSLAM3_SOURCE="$BACKEND_ROOT/ORB_SLAM3"
 clone_pinned https://github.com/rpng/open_vins.git "$OPENVINS_SOURCE" "$OPENVINS_COMMIT"
 clone_pinned https://github.com/UZ-SLAMLab/ORB_SLAM3.git "$ORBSLAM3_SOURCE" "$ORBSLAM3_COMMIT"
+apply_orbslam3_patch() {
+  local patch_path="$1"
+  if git -C "$ORBSLAM3_SOURCE" apply --reverse --check "$patch_path" 2>/dev/null; then
+    echo "ORB-SLAM3 patch already applied: $(basename "$patch_path")"
+  else
+    git -C "$ORBSLAM3_SOURCE" apply --check "$patch_path"
+    git -C "$ORBSLAM3_SOURCE" apply "$patch_path"
+  fi
+}
+apply_orbslam3_patch "$ORBSLAM3_PATCH"
+apply_orbslam3_patch "$ORBSLAM3_SYNC_PATCH"
 
 if [[ "$BUILD" != "none" ]]; then
   command -v docker >/dev/null || { echo "docker is required for backend builds" >&2; exit 2; }

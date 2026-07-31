@@ -39,12 +39,6 @@ def evaluate_dataset(name: str, path: Path | None = None, *, seed: int = 7) -> D
         from ariadne.datasets.zip_datasets import evaluate_miluv
 
         return evaluate_miluv(path)
-    if name == "qdrone":
-        if path is None:
-            raise ValueError("qdrone evaluation requires --path")
-        from ariadne.datasets.zip_datasets import evaluate_qdrone
-
-        return evaluate_qdrone(path)
     if name == "d2slam":
         if path is None:
             raise ValueError("d2slam evaluation requires --path")

@@ -12,13 +12,16 @@ import importlib
 import io
 import json
 import math
+import subprocess
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ariadne.benchmarks import build_video_evidence, select_video_frames
+from ariadne.config import load_config
+from ariadne.pose_correction import CorrectionLoadProfile, assess_correction_capacity
 from ariadne.replay import D2SlamReplaySource, GroundTruthPose
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,19 +43,105 @@ OUTPUT = ROOT / "reports/ariadne_status.html"
 PHASE1 = ROOT / "outputs/ariadne/phase1/benchmark.json"
 EXCHANGE = ROOT / "outputs/ariadne/exchange/benchmark.json"
 GLOBAL_SCENE = ROOT / "outputs/ariadne/global-scene/benchmark.json"
+MILUV_GLOBAL_POSE = ROOT / "outputs/ariadne/miluv-global-pose/benchmark.json"
+S3E_GLOBAL_POSE = ROOT / "outputs/ariadne/s3e-global-pose/benchmark.json"
 OPERATIONS = ROOT / "outputs/ariadne/operations/benchmark.json"
 END_TO_END = ROOT / "outputs/ariadne/end-to-end/benchmark.json"
 DATASETS = ROOT / "outputs/ariadne/dataset_sequence/summary.json"
 REAL_VIO = ROOT / "outputs/ariadne/real_vio/d2slam-1"
+S3E_REAL_VIO = ROOT / "outputs/ariadne/real_vio"
 FRAME_DIR = REAL_VIO / "orbslam3/euroc/mav0/cam0/data"
 D2SLAM_ROOT = ROOT / "datasets/ariadne/d2slam/extracted/tum_corr"
 RESPLAT_REPORT = ROOT / "outputs/ariadne/resplat_report/neighbourhood_105_10f"
 RESPLAT_CHECKPOINT = ROOT / "pretrained/resplat-base-dl3dv-256x448-view8-1934a04c.pth"
 RESPLAT_RUN_URL = "https://wandb.ai/galvin/gaussiansplat_test/runs/15d73m80"
+STATIC_GLOBAL_GAUSSIANS = ROOT / "outputs/ariadne/s3e-global-gaussian-static/manifest.json"
+STATIC_GLOBAL_GAUSSIANS_PREPARATION = (
+    ROOT / "outputs/ariadne/s3e-global-gaussian-static/preparation.json"
+)
+
+DOCUMENTATION_EXTRAS = (
+    Path("applications/ariadne/docs/static_asynchronous_global_gaussians.md"),
+    Path("applications/ariadne/docs/vio_global_pose_experiment_log.md"),
+)
+DOCUMENTATION_EXCLUDED_NAMES = {
+    "LOCAL_SECRETS.md",
+}
+DOCUMENTATION_EXCLUDED_PARTS = {
+    ".cache",
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "node_modules",
+    "outputs",
+    "wandb",
+}
 
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def documentation_group(relative_path: Path) -> str:
+    parts = relative_path.parts
+    if parts[:2] == ("applications", "ariadne"):
+        return "ARIADNE"
+    if parts and parts[0] == "documentation":
+        return "Specifications"
+    if parts and parts[0] == "datasets":
+        return "Datasets"
+    if parts and parts[0] == "third_party":
+        return "Third party"
+    if parts and parts[0] == "src":
+        return "Integrations"
+    return "Repository"
+
+
+def documentation_title(markdown: str, relative_path: Path) -> str:
+    for line in markdown.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return relative_path.stem.replace("_", " ").replace("-", " ").title()
+
+
+def documentation_paths() -> list[Path]:
+    """Return safe project documentation without exposing clone-local material."""
+    command = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z", "--", "*.md"],
+        check=False,
+        capture_output=True,
+    )
+    relative_paths = {
+        Path(item.decode("utf-8"))
+        for item in command.stdout.split(b"\0")
+        if item
+    }
+    relative_paths.update(path for path in DOCUMENTATION_EXTRAS if (ROOT / path).is_file())
+    return sorted(
+        path
+        for path in relative_paths
+        if path.name not in DOCUMENTATION_EXCLUDED_NAMES
+        and not DOCUMENTATION_EXCLUDED_PARTS.intersection(path.parts)
+        and (ROOT / path).is_file()
+    )
+
+
+def documentation_payload() -> list[dict[str, Any]]:
+    documents = []
+    for relative_path in documentation_paths():
+        markdown = (ROOT / relative_path).read_text(encoding="utf-8")
+        documents.append(
+            {
+                "group": documentation_group(relative_path),
+                "markdown": markdown,
+                "path": relative_path.as_posix(),
+                "title": documentation_title(markdown, relative_path),
+                "word_count": len(markdown.split()),
+            }
+        )
+    return documents
 
 
 def image_data_uri(path: Path) -> str:
@@ -151,7 +240,9 @@ def movement_context(
     for estimate in estimates:
         insertion = bisect.bisect_left(truth_times, estimate)
         candidates = [
-            index for index in (insertion - 1, insertion) if 0 <= index < len(truth_times)
+            index
+            for index in (insertion - 1, insertion)
+            if 0 <= index < len(truth_times)
         ]
         if not candidates:
             continue
@@ -197,19 +288,207 @@ def movement_context(
 
 
 def build_payload() -> dict[str, Any]:
+    documentation = documentation_payload()
     phase1 = read_json(PHASE1)
     exchange = read_json(EXCHANGE)
     global_scene = read_json(GLOBAL_SCENE)
+    miluv_global_pose = read_json(MILUV_GLOBAL_POSE)
+    s3e_global_pose = read_json(S3E_GLOBAL_POSE)
+    static_global_gaussians = {
+        **read_json(STATIC_GLOBAL_GAUSSIANS),
+        "preparation": read_json(STATIC_GLOBAL_GAUSSIANS_PREPARATION),
+    }
     operations = read_json(OPERATIONS)
     end_to_end = read_json(END_TO_END)
     datasets = read_json(DATASETS)
     openvins = read_json(REAL_VIO / "openvins/evaluation.json")
     orbslam3 = read_json(REAL_VIO / "orbslam3/evaluation.json")
+    s3e_vio = {
+        agent: read_json(S3E_REAL_VIO / f"s3e-{agent}/orbslam3/evaluation.json")
+        for agent in ("alpha", "bob", "carol")
+    }
+    s3e_openvins = read_json(S3E_REAL_VIO / "s3e-alpha/openvins/evaluation.json")
+    s3e_carol_geometry_corrected = read_json(
+        S3E_REAL_VIO / "s3e-carol/orbslam3-auto-geometry/evaluation.json"
+    )
+    s3e_carol_reproducibility = read_json(
+        S3E_REAL_VIO / "s3e-carol/orbslam3-auto-geometry-reproducibility.json"
+    )
+    s3e_alpha_reproducibility = read_json(
+        S3E_REAL_VIO / "s3e-alpha/orbslam3-bf-1.2-fast-init-reproducibility.json"
+    )
+    s3e_alpha_deterministic_reproducibility = read_json(
+        S3E_REAL_VIO
+        / "s3e-alpha/orbslam3-bf-1.2-fast-init-deterministic-reproducibility.json"
+    )
+    s3e_alpha_mapping_sync_reproducibility = read_json(
+        S3E_REAL_VIO
+        / "s3e-alpha/orbslam3-bf-1.2-fast-init-mapping-sync-reproducibility.json"
+    )
+    s3e_alpha_modes = {
+        "stereo": read_json(S3E_REAL_VIO / "s3e-alpha/orbslam3-stereo/evaluation.json"),
+        "calibrated_500": read_json(
+            S3E_REAL_VIO / "s3e-alpha/orbslam3-bf-1.15/evaluation.json"
+        ),
+        "calibrated_1000": read_json(
+            S3E_REAL_VIO / "s3e-alpha/orbslam3-bf-1.15-1000/evaluation.json"
+        ),
+        "fast_init_1000": read_json(
+            S3E_REAL_VIO / "s3e-alpha/orbslam3-bf-1.15-fast-init/evaluation.json"
+        ),
+        "fast_init_scaled_1000": read_json(
+            S3E_REAL_VIO / "s3e-alpha/orbslam3-bf-1.2-fast-init/evaluation.json"
+        ),
+        "high_recall_1000": read_json(
+            S3E_REAL_VIO
+            / "s3e-alpha/orbslam3-bf-1.2-fast-init-high-recall/evaluation.json"
+        ),
+        "late_default_1000": read_json(
+            S3E_REAL_VIO / "s3e-alpha/orbslam3-fast-init-start-1000/evaluation.json"
+        ),
+        "late_scaled_1000": read_json(
+            S3E_REAL_VIO
+            / "s3e-alpha/orbslam3-bf-1.2-fast-init-start-1000/evaluation.json"
+        ),
+    }
+    intelligence_config = load_config(
+        ROOT / "applications/ariadne/configs/intelligence/default.yaml"
+    )
+    if intelligence_config.intelligence is None:
+        raise ValueError("status build requires an Intelligence configuration")
+    correction_config = intelligence_config.intelligence.correction
+    scheduling_config = intelligence_config.intelligence.correction_scheduling
+    alpha_repeat_metrics = s3e_alpha_reproducibility["metrics"]
+    alpha_deterministic_metrics = s3e_alpha_deterministic_reproducibility["metrics"]
+    alpha_mapping_sync_metrics = s3e_alpha_mapping_sync_reproducibility["metrics"]
+    alpha_tracking_healthy = (
+        int(alpha_repeat_metrics["tracking_healthy_count"])
+        == int(alpha_repeat_metrics["replicate_count"])
+    )
+    alpha_live_correction_eligible = (
+        alpha_tracking_healthy
+        and int(alpha_repeat_metrics["causal_native_rtk_target_pass_count"])
+        == int(alpha_repeat_metrics["replicate_count"])
+        and bool(alpha_repeat_metrics["trajectory_reproducible"])
+    )
+    correction_profiles = (
+        CorrectionLoadProfile(
+            "Alpha",
+            float(
+                alpha_repeat_metrics[
+                    "causal_native_rtk_correction_messages_per_minute_max"
+                ]
+            ),
+            float(
+                alpha_repeat_metrics[
+                    "causal_native_rtk_correction_interval_min_seconds_min"
+                ]
+            ),
+            int(
+                alpha_repeat_metrics[
+                    "causal_native_rtk_correction_burst_per_second_max"
+                ]
+            ),
+            alpha_tracking_healthy,
+            alpha_live_correction_eligible,
+        ),
+        *(
+            CorrectionLoadProfile(
+                agent_id,
+                float(
+                    report["metrics"][
+                        "causal_native_rtk_sim3_correction_messages_per_minute"
+                    ]
+                ),
+                float(
+                    report["metrics"][
+                        "causal_native_rtk_sim3_correction_interval_min_seconds"
+                    ]
+                ),
+                int(
+                    report["metrics"][
+                        "causal_native_rtk_sim3_correction_burst_per_second_max"
+                    ]
+                ),
+                bool(report["metrics"]["tracking_healthy"]),
+                bool(
+                    report["metrics"]["tracking_healthy"]
+                    and report["metrics"]["causal_native_rtk_sim3_target_met"]
+                ),
+            )
+            for agent_id, report in (
+                ("Bob", s3e_vio["bob"]),
+                ("Carol", s3e_carol_geometry_corrected),
+            )
+        ),
+    )
+    correction_capacity = assess_correction_capacity(
+        correction_profiles,
+        evaluation_period_s=scheduling_config.evaluation_period_seconds,
+        max_corrections_per_cycle=scheduling_config.max_corrections_per_cycle,
+    )
+    correction_profile_details = [
+        {
+            **asdict(profile),
+            "action": (
+                "schedule_corrections"
+                if profile.correction_eligible
+                else (
+                    "relocalize_live_pose_failure"
+                    if profile.tracking_healthy
+                    else "relocalize_tracking_failure"
+                )
+            ),
+        }
+        for profile in correction_profiles
+    ]
+    local_alignment_profiles = [
+        {
+            "agent_id": agent_id,
+            "tracking_healthy": bool(report["metrics"]["tracking_healthy"]),
+            "rigid_interval_s": float(
+                report["metrics"]["local_rigid_maximum_passing_interval_seconds"]
+            ),
+            "rigid_messages_per_minute": float(
+                report["metrics"]["local_rigid_optimistic_anchor_messages_per_minute"]
+            ),
+            "sim3_interval_s": float(
+                report["metrics"]["local_sim3_maximum_passing_interval_seconds"]
+            ),
+            "sim3_messages_per_minute": float(
+                report["metrics"]["local_sim3_optimistic_anchor_messages_per_minute"]
+            ),
+            "causal_se3_cadence_s": float(
+                report["metrics"]["causal_se3_maximum_passing_cadence_seconds"]
+            ),
+            "causal_se3_messages_per_minute": float(
+                report["metrics"]["causal_se3_anchor_messages_per_minute"]
+            ),
+            "causal_sim3_cadence_s": float(
+                report["metrics"]["causal_sim3_maximum_passing_cadence_seconds"]
+            ),
+            "causal_sim3_messages_per_minute": float(
+                report["metrics"]["causal_sim3_anchor_messages_per_minute"]
+            ),
+            "action": (
+                "retain_event_triggered_translation"
+                if bool(report["metrics"]["tracking_healthy"])
+                else "relocalize"
+            ),
+        }
+        for agent_id, report in (
+            ("Alpha", s3e_alpha_modes["fast_init_scaled_1000"]),
+            ("Bob", s3e_vio["bob"]),
+            ("Carol", s3e_vio["carol"]),
+        )
+    ]
     resplat = read_json(RESPLAT_REPORT / "metrics.json")
     resplat_render = select_resplat_render(resplat)
-    reference_truth = D2SlamReplaySource(D2SLAM_ROOT, 1).load(
-        start_frame=0, max_frames=500
-    ).ground_truth
+    reference_truth = (
+        D2SlamReplaySource(D2SLAM_ROOT, 1)
+        .load(start_frame=0, max_frames=500)
+        .ground_truth
+    )
     openvins_context = movement_context(
         REAL_VIO / "openvins/trajectory.txt",
         openvins["metrics"]["matched_pose_count"],
@@ -255,9 +534,11 @@ def build_payload() -> dict[str, Any]:
         "summary": {
             "tests": ARIADNE_TEST_COUNT,
             "datasets": sum(item["status"] == "passed" for item in datasets),
+            "documents": len(documentation),
             "real_backends": 2,
             "phase1_status": phase1["status"],
         },
+        "documentation": documentation,
         "results": [
             {
                 "name": "OpenVINS",
@@ -280,19 +561,229 @@ def build_payload() -> dict[str, Any]:
                 "wandb": "https://wandb.ai/galvin/gaussiansplat_test/runs/sqod0oj2",
             },
         ],
+        "evaluation_progression": {
+            "target_ate_m": 0.1,
+            "stages": [
+                {
+                    "label": "Original S3E Alpha",
+                    "scope": "500 frames · default baseline",
+                    "status": "baseline",
+                    "ate_m": s3e_vio["alpha"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_vio["alpha"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_vio["alpha"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_vio["alpha"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_vio["alpha"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_vio["alpha"]["metrics"]["map_reset_count"],
+                    "delta": "comparison baseline",
+                    "change": "Initial production ORB-SLAM3 replay.",
+                },
+                {
+                    "label": "Metric-scale sensitivity",
+                    "scope": "500 frames · 1.15x stereo baseline",
+                    "status": "diagnostic",
+                    "ate_m": s3e_alpha_modes["calibrated_500"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_alpha_modes["calibrated_500"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_alpha_modes["calibrated_500"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_alpha_modes["calibrated_500"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_alpha_modes["calibrated_500"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_alpha_modes["calibrated_500"]["metrics"]["map_reset_count"],
+                    "delta": "74.3% lower ATE vs 500-frame baseline",
+                    "change": "Scaled the stereo baseline; tracking stayed healthy, but the setting was not transferable.",
+                },
+                {
+                    "label": "Original long window",
+                    "scope": "1,000 frames · 1.15x baseline",
+                    "status": "baseline",
+                    "ate_m": s3e_alpha_modes["calibrated_1000"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_alpha_modes["calibrated_1000"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_alpha_modes["calibrated_1000"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_alpha_modes["calibrated_1000"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_alpha_modes["calibrated_1000"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_alpha_modes["calibrated_1000"]["metrics"]["map_reset_count"],
+                    "delta": "new long-window baseline",
+                    "change": "Doubled the evaluation window; exposed resets and lost-frame continuity failure.",
+                },
+                {
+                    "label": "Fast IMU initialization",
+                    "scope": "1,000 frames · 1.15x baseline",
+                    "status": "retained",
+                    "ate_m": s3e_alpha_modes["fast_init_1000"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_alpha_modes["fast_init_1000"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_alpha_modes["fast_init_1000"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_alpha_modes["fast_init_1000"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_alpha_modes["fast_init_1000"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_alpha_modes["fast_init_1000"]["metrics"]["map_reset_count"],
+                    "delta": "37.8% lower ATE vs long baseline",
+                    "change": "Bypassed the static-motion initialization wait; recovered continuity without reaching the accuracy target.",
+                },
+                {
+                    "label": "Selected balanced profile",
+                    "scope": "1,000 frames · fast init · 1.20x baseline",
+                    "status": "retained",
+                    "ate_m": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_alpha_modes["fast_init_scaled_1000"]["metrics"]["map_reset_count"],
+                    "delta": "52.7% lower ATE vs long baseline",
+                    "change": "Raised the baseline scale to 1.20x; best healthy single long-window configuration.",
+                },
+                {
+                    "label": "High-recall features",
+                    "scope": "1,000 frames · 2,400 ORB features",
+                    "status": "rejected",
+                    "ate_m": s3e_alpha_modes["high_recall_1000"]["metrics"]["ate_rmse_m"],
+                    "sim3_ate_m": s3e_alpha_modes["high_recall_1000"]["metrics"]["sim3_ate_rmse_m"],
+                    "rpe_m": s3e_alpha_modes["high_recall_1000"]["metrics"]["rpe_rmse_m"],
+                    "poses": s3e_alpha_modes["high_recall_1000"]["metrics"]["trajectory_pose_count"],
+                    "lost": s3e_alpha_modes["high_recall_1000"]["metrics"]["lost_frame_count"],
+                    "resets": s3e_alpha_modes["high_recall_1000"]["metrics"]["map_reset_count"],
+                    "delta": "52.0% higher ATE; 16.0% lower RPE",
+                    "change": "Increased feature count; local motion improved while global consistency regressed.",
+                },
+                {
+                    "label": "Normal real-time repeats",
+                    "scope": "1,000 frames · three identical runs",
+                    "status": "diagnostic",
+                    "ate_m": alpha_repeat_metrics["ate_rmse_m_median"],
+                    "ate_min_m": alpha_repeat_metrics["ate_rmse_m_min"],
+                    "ate_max_m": alpha_repeat_metrics["ate_rmse_m_max"],
+                    "sim3_ate_m": alpha_repeat_metrics["sim3_ate_rmse_m_median"],
+                    "rpe_m": alpha_repeat_metrics["rpe_rmse_m_median"],
+                    "poses": alpha_repeat_metrics["trajectory_pose_count_min"],
+                    "lost": alpha_repeat_metrics["lost_frame_count_max"],
+                    "resets": alpha_repeat_metrics["map_reset_count_max"],
+                    "delta": "1.338–1.635 m ATE range",
+                    "change": "Added a three-run gate; identical tracking counts exposed trajectory-shape nondeterminism.",
+                },
+                {
+                    "label": "Single-CPU controlled runtime",
+                    "scope": "1,000 frames · one CPU · three runs",
+                    "status": "diagnostic",
+                    "ate_m": alpha_deterministic_metrics["ate_rmse_m_median"],
+                    "ate_min_m": alpha_deterministic_metrics["ate_rmse_m_min"],
+                    "ate_max_m": alpha_deterministic_metrics["ate_rmse_m_max"],
+                    "sim3_ate_m": alpha_deterministic_metrics["sim3_ate_rmse_m_median"],
+                    "rpe_m": alpha_deterministic_metrics["rpe_rmse_m_median"],
+                    "poses": alpha_deterministic_metrics["trajectory_pose_count_min"],
+                    "lost": alpha_deterministic_metrics["lost_frame_count_max"],
+                    "resets": alpha_deterministic_metrics["map_reset_count_max"],
+                    "delta": "3.6% lower median; 86.5% wider ATE range",
+                    "change": "Pinned ORB-SLAM3 and numeric libraries to one CPU; accuracy varied less in the median but reproducibility worsened.",
+                },
+                {
+                    "label": "Current mapping-synchronized runtime",
+                    "scope": "1,000 frames · offline mapper barrier · three runs",
+                    "status": "current",
+                    "ate_m": alpha_mapping_sync_metrics["ate_rmse_m_median"],
+                    "ate_min_m": alpha_mapping_sync_metrics["ate_rmse_m_min"],
+                    "ate_max_m": alpha_mapping_sync_metrics["ate_rmse_m_max"],
+                    "sim3_ate_m": alpha_mapping_sync_metrics[
+                        "sim3_ate_rmse_m_median"
+                    ],
+                    "rpe_m": alpha_mapping_sync_metrics["rpe_rmse_m_median"],
+                    "poses": alpha_mapping_sync_metrics["trajectory_pose_count_min"],
+                    "lost": alpha_mapping_sync_metrics["lost_frame_count_max"],
+                    "resets": alpha_mapping_sync_metrics["map_reset_count_max"],
+                    "delta": "18.5% narrower ATE range; 49.7% narrower Sim(3) range",
+                    "change": "Waited for local mapping after every frame and removed real-time pacing; spread improved but the median regressed and reproducibility still failed.",
+                },
+            ],
+            "current_layers": [
+                {
+                    "label": "Raw rigid VIO",
+                    "scope": "three-run median · production backend",
+                    "status": "diagnostic",
+                    "ate_m": alpha_mapping_sync_metrics["ate_rmse_m_median"],
+                    "ate_min_m": alpha_mapping_sync_metrics["ate_rmse_m_min"],
+                    "ate_max_m": alpha_mapping_sync_metrics["ate_rmse_m_max"],
+                    "detail": "Current three-run median; production tracking, failed reproducibility.",
+                },
+                {
+                    "label": "Global Sim(3) alignment",
+                    "scope": "offline whole-trajectory alignment",
+                    "status": "diagnostic",
+                    "ate_m": alpha_mapping_sync_metrics["sim3_ate_rmse_m_median"],
+                    "ate_min_m": alpha_mapping_sync_metrics["sim3_ate_rmse_m_min"],
+                    "ate_max_m": alpha_mapping_sync_metrics["sim3_ate_rmse_m_max"],
+                    "detail": "Offline whole-trajectory scale alignment; does not repair path shape.",
+                },
+                {
+                    "label": "Native 1 Hz RTK online",
+                    "scope": "live causal correction · 58.85/min",
+                    "status": "rejected",
+                    "ate_m": alpha_mapping_sync_metrics[
+                        "causal_native_rtk_sim3_ate_m_median"
+                    ],
+                    "ate_min_m": alpha_mapping_sync_metrics[
+                        "causal_native_rtk_sim3_ate_m_min"
+                    ],
+                    "ate_max_m": alpha_mapping_sync_metrics[
+                        "causal_native_rtk_sim3_ate_m_max"
+                    ],
+                    "detail": "Live and causal at 58.85 corrections/min; zero of three target passes.",
+                },
+                {
+                    "label": "Adaptive fixed-lag map",
+                    "scope": "delayed map history · 38.22/min",
+                    "status": "controlled",
+                    "ate_m": alpha_mapping_sync_metrics[
+                        "adaptive_fixed_lag_native_rtk_sim3_ate_m_median"
+                    ],
+                    "ate_min_m": alpha_mapping_sync_metrics[
+                        "adaptive_fixed_lag_native_rtk_sim3_ate_m_min"
+                    ],
+                    "ate_max_m": alpha_mapping_sync_metrics[
+                        "adaptive_fixed_lag_native_rtk_sim3_ate_m_max"
+                    ],
+                    "detail": "Delayed map history at 38.22 finalizations/min and 1.890 s p95 delay; three of three controlled passes.",
+                },
+            ],
+            "normal_ate_range_m": alpha_repeat_metrics["ate_rmse_m_range"],
+            "current_ate_range_m": alpha_mapping_sync_metrics["ate_rmse_m_range"],
+            "normal_sim3_range_m": alpha_repeat_metrics["sim3_ate_rmse_m_range"],
+            "current_sim3_range_m": alpha_mapping_sync_metrics[
+                "sim3_ate_rmse_m_range"
+            ],
+            "source": "S3E Playground 2 Alpha ORB-SLAM3 evaluation artifacts",
+        },
         "phase1": phase1,
         "exchange": exchange,
         "global_scene": global_scene,
+        "static_global_gaussians": static_global_gaussians,
+        "miluv_global_pose": miluv_global_pose,
+        "s3e_global_pose": s3e_global_pose,
+        "s3e_real_vio": s3e_vio,
+        "s3e_carol_geometry_corrected": s3e_carol_geometry_corrected,
+        "s3e_carol_reproducibility": s3e_carol_reproducibility,
+        "s3e_alpha_reproducibility": s3e_alpha_reproducibility,
+        "s3e_alpha_deterministic_reproducibility": (
+            s3e_alpha_deterministic_reproducibility
+        ),
+        "s3e_alpha_mapping_sync_reproducibility": (
+            s3e_alpha_mapping_sync_reproducibility
+        ),
+        "s3e_alpha_modes": s3e_alpha_modes,
+        "s3e_correction_capacity": asdict(correction_capacity),
         "operations": operations,
         "end_to_end": end_to_end,
         "datasets": [
             {
                 "name": "MILUV",
-                "state": "ready",
+                "state": "validated",
                 "agents": dataset_by_name["miluv"]["metrics"]["agent_count"],
                 "signals": "Vision / IMU / UWB / mocap",
-                "detail": "Three-UAV archive replay is decoded and synchronized.",
-                "limit": "Selected archive does not publish camera intrinsics.",
+                "detail": (
+                    "Real full-SE(3) mocap truth validates the shared rationalizer at "
+                    f"{miluv_global_pose['metrics']['optimized_global_ate_m']:.4f} m ATE "
+                    "with five corrections per UAV."
+                ),
+                "limit": (
+                    "Local odometry and cross-agent factors remain controlled; raw UWB "
+                    f"is {miluv_global_pose['metrics']['uwb_range_rmse_m']:.3f} m RMSE "
+                    "and cannot directly anchor the 0.1 m target."
+                ),
             },
             {
                 "name": "D2SLAM",
@@ -304,19 +795,26 @@ def build_payload() -> dict[str, Any]:
             },
             {
                 "name": "S3E",
-                "state": "ready",
+                "state": "validated",
                 "agents": dataset_by_name["s3e"]["metrics"]["agent_count"],
                 "signals": "Stereo / IMU / GNSS / LiDAR",
-                "detail": "ROS2 replay, timing, calibration, and ground truth are decoded.",
-                "limit": "Backend-specific VIO calibration is not yet validated.",
-            },
-            {
-                "name": "QDrone",
-                "state": "limited",
-                "agents": dataset_by_name["qdrone"]["metrics"]["agent_count"],
-                "signals": "IMU / UWB / ground truth",
-                "detail": "Useful for localization and timing regression.",
-                "limit": "No vision stream; cannot exercise ARIADNE end to end.",
+                "detail": (
+                    "The controlled rationalization proxy reaches "
+                    f"{s3e_global_pose['metrics']['optimized_global_ate_m']:.3f} m ATE, but "
+                    "none of three production ORB-SLAM3 Wingman runs meets 0.1 m, "
+                    "and matched Alpha OpenVINS diverges."
+                ),
+                "limit": (
+                    "Alpha fast initialization removes resets over 1,000 frames, "
+                    "but three identical runs span "
+                    f"{s3e_alpha_reproducibility['metrics']['ate_rmse_m_min']:.2f}–"
+                    f"{s3e_alpha_reproducibility['metrics']['ate_rmse_m_max']:.2f} m ATE "
+                    "and fail the reproducibility gate; "
+                    "OpenVINS reaches "
+                    f"{s3e_openvins['metrics']['ate_rmse_m']:.1f} m with a "
+                    f"{s3e_openvins['metrics']['metric_scale_correction_to_truth']:.3f}× "
+                    "scale correction and must relocalize."
+                ),
             },
             {
                 "name": "Simulation",
@@ -391,11 +889,15 @@ def build_payload() -> dict[str, Any]:
                     "series": [
                         {
                             "name": "OpenVINS",
-                            "points": trajectory_points(REAL_VIO / "openvins/trajectory.txt"),
+                            "points": trajectory_points(
+                                REAL_VIO / "openvins/trajectory.txt"
+                            ),
                         },
                         {
                             "name": "ORB-SLAM3",
-                            "points": trajectory_points(REAL_VIO / "orbslam3/f_ariadne.txt"),
+                            "points": trajectory_points(
+                                REAL_VIO / "orbslam3/f_ariadne.txt"
+                            ),
                         },
                     ],
                 },
@@ -558,7 +1060,9 @@ def build_payload() -> dict[str, Any]:
                     "gaussians": global_scene["details"]["gaussians"],
                     "inputs": global_scene["metrics"]["input_observations"],
                     "latency_ms": global_scene["metrics"]["reconstruction_latency_ms"],
-                    "contract_backend": global_scene["metrics"]["reconstruction_backend"],
+                    "contract_backend": global_scene["metrics"][
+                        "reconstruction_backend"
+                    ],
                     "estimated_memory_bytes": global_scene["metrics"][
                         "reconstruction_estimated_memory_bytes"
                     ],
@@ -576,7 +1080,9 @@ def build_payload() -> dict[str, Any]:
                     "resolution": resplat["config"]["resolution"],
                     "mean_metrics": resplat["mean"],
                     "target_metrics": next(
-                        item for item in resplat["per_view"] if item["name"] == resplat_render.name
+                        item
+                        for item in resplat["per_view"]
+                        if item["name"] == resplat_render.name
                     ),
                     "wandb_runtime_s": 11,
                     "wandb_run_id": "15d73m80",
@@ -593,8 +1099,12 @@ def build_payload() -> dict[str, Any]:
                     "kind": "scene_map",
                     "gaussians": global_scene["details"]["gaussians"],
                     "revision": global_scene["metrics"]["scene_revision"],
-                    "history": global_scene["details"]["scene_map"]["history_revisions"],
-                    "snapshot_bytes": global_scene["details"]["scene_map"]["snapshot_bytes"],
+                    "history": global_scene["details"]["scene_map"][
+                        "history_revisions"
+                    ],
+                    "snapshot_bytes": global_scene["details"]["scene_map"][
+                        "snapshot_bytes"
+                    ],
                     "rollback_supported": global_scene["details"]["scene_map"][
                         "rollback_supported"
                     ],
@@ -610,8 +1120,12 @@ def build_payload() -> dict[str, Any]:
                 "group": "Global state",
                 "name": "Pose graph",
                 "state": "validated",
-                "summary": "Bounded incremental SE(3) constraints preserve revisions across restart while validating covariance, disconnected components, optimization, and outlier rejection.",
-                "implementation": "RobustSE3PoseGraph · ariadne.se3-pose-graph.v1",
+                "summary": (
+                    "MILUV real 6-DoF mocap and S3E RTK geometry validate shared multi-agent "
+                    "rationalization, per-Wingman load, and false-loop rejection; bounded SE(3) "
+                    "state also preserves revisions across restart."
+                ),
+                "implementation": "RobustSE3PoseGraph + MILUV + S3E · ariadne.se3-pose-graph.v1",
                 "visual": {
                     "kind": "se3_pose_graph",
                     **global_scene["details"]["pose_graph"],
@@ -622,14 +1136,976 @@ def build_payload() -> dict[str, Any]:
                     "state_restored": global_scene["metrics"][
                         "se3_graph_state_restored"
                     ],
+                    "miluv_baseline_ate_m": miluv_global_pose["metrics"][
+                        "baseline_global_ate_m"
+                    ],
+                    "miluv_optimized_ate_m": miluv_global_pose["metrics"][
+                        "optimized_global_ate_m"
+                    ],
+                    "miluv_optimized_orientation_rmse_rad": miluv_global_pose[
+                        "metrics"
+                    ]["optimized_global_orientation_rmse_rad"],
+                    "miluv_target_ate_m": miluv_global_pose["metrics"][
+                        "target_global_ate_m"
+                    ],
+                    "miluv_correction_interval_s": miluv_global_pose["metrics"][
+                        "selected_correction_interval_seconds"
+                    ],
+                    "miluv_messages_per_minute_max": miluv_global_pose["metrics"][
+                        "selected_correction_messages_per_minute_max"
+                    ],
+                    "miluv_corrections_by_agent": miluv_global_pose["details"][
+                        "intelligence_load"
+                    ]["correction_count_by_agent"],
+                    "miluv_cross_agent_only_ate_m": miluv_global_pose["details"][
+                        "vision_correction_limits"
+                    ]["cross_agent_only_global_ate_m"],
+                    "miluv_uwb_rmse_m": miluv_global_pose["metrics"][
+                        "uwb_range_rmse_m"
+                    ],
+                    "miluv_uwb_p95_m": miluv_global_pose["metrics"][
+                        "uwb_range_absolute_error_p95_m"
+                    ],
+                    "miluv_uwb_causal_ate_m": miluv_global_pose["metrics"][
+                        "uwb_graph_best_tested_global_ate_m"
+                    ],
+                    "miluv_uwb_causal_messages_per_minute_max": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_graph_best_tested_messages_per_minute_max"],
+                    "miluv_uwb_fixed_lag_position_ate_m": miluv_global_pose["metrics"][
+                        "uwb_fixed_lag_global_position_ate_m"
+                    ],
+                    "miluv_uwb_fixed_lag_max_agent_ate_m": miluv_global_pose["metrics"][
+                        "uwb_fixed_lag_max_agent_position_ate_m"
+                    ],
+                    "miluv_uwb_fixed_lag_orientation_rmse_rad": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_fixed_lag_global_orientation_rmse_rad"],
+                    "miluv_uwb_fixed_lag_duration_s": miluv_global_pose["metrics"][
+                        "uwb_fixed_lag_duration_seconds"
+                    ],
+                    "miluv_uwb_fixed_lag_solve_interval_s": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_fixed_lag_solve_interval_seconds"],
+                    "miluv_uwb_fixed_lag_solve_p95_ms": miluv_global_pose["metrics"][
+                        "uwb_fixed_lag_optimization_latency_ms_p95"
+                    ],
+                    "miluv_uwb_fixed_lag_messages_per_minute_max": (
+                        miluv_global_pose["metrics"][
+                            "uwb_fixed_lag_correction_messages_per_minute_max"
+                        ]
+                    ),
+                    "miluv_uwb_fixed_lag_all_agents_target_met": (
+                        miluv_global_pose["metrics"][
+                            "uwb_fixed_lag_all_agents_position_target_met"
+                        ]
+                    ),
+                    "miluv_uwb_fixed_lag_position_claim_eligible": (
+                        miluv_global_pose["metrics"][
+                            "uwb_fixed_lag_position_claim_eligible"
+                        ]
+                    ),
+                    "miluv_uwb_fixed_lag_full_pose_claim_eligible": (
+                        miluv_global_pose["metrics"][
+                            "uwb_fixed_lag_full_pose_claim_eligible"
+                        ]
+                    ),
+                    "miluv_uwb_batch_position_ate_m": miluv_global_pose["metrics"][
+                        "uwb_batch_global_position_ate_m"
+                    ],
+                    "miluv_uwb_batch_orientation_rmse_rad": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_batch_global_orientation_rmse_rad"],
+                    "miluv_uwb_batch_messages_per_minute_max": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_batch_correction_messages_per_minute_max"],
+                    "miluv_uwb_batch_position_target_met": miluv_global_pose["metrics"][
+                        "uwb_batch_position_target_met"
+                    ],
+                    "miluv_uwb_batch_full_pose_target_met": miluv_global_pose[
+                        "metrics"
+                    ]["uwb_batch_full_pose_target_met"],
+                    "miluv_loaded_archive_fraction_percent": miluv_global_pose[
+                        "metrics"
+                    ]["loaded_archive_fraction_percent"],
+                    "miluv_adaptive_correction_count": miluv_global_pose["details"][
+                        "adaptive_scheduler"
+                    ]["global_correction_count"],
+                    "miluv_fixed_correction_count": miluv_global_pose["details"][
+                        "fixed_cadence_reference"
+                    ]["global_correction_count"],
+                    "s3e_baseline_ate_m": s3e_global_pose["metrics"][
+                        "baseline_global_ate_m"
+                    ],
+                    "s3e_optimized_ate_m": s3e_global_pose["metrics"][
+                        "optimized_global_ate_m"
+                    ],
+                    "s3e_maximum_agent_ate_m": s3e_global_pose["metrics"][
+                        "maximum_agent_global_ate_m"
+                    ],
+                    "s3e_per_agent_ate_m": s3e_global_pose["details"][
+                        "adaptive_scheduler"
+                    ]["per_agent_ate_m"],
+                    "s3e_baseline_orientation_rmse_rad": s3e_global_pose["metrics"][
+                        "baseline_global_orientation_rmse_rad"
+                    ],
+                    "s3e_optimized_orientation_rmse_rad": s3e_global_pose["metrics"][
+                        "optimized_global_orientation_rmse_rad"
+                    ],
+                    "s3e_target_orientation_rmse_rad": s3e_global_pose["metrics"][
+                        "target_global_orientation_rmse_rad"
+                    ],
+                    "s3e_improvement_percent": s3e_global_pose["metrics"][
+                        "global_ate_improvement_percent"
+                    ],
+                    "s3e_cross_agent_baseline_relative_rmse_m": (
+                        s3e_global_pose["metrics"][
+                            "baseline_cross_agent_relative_translation_rmse_m"
+                        ]
+                    ),
+                    "s3e_cross_agent_dense_relative_rmse_m": (
+                        s3e_global_pose["metrics"][
+                            "dense_cross_agent_relative_translation_rmse_m"
+                        ]
+                    ),
+                    "s3e_cross_agent_dense_relative_improvement_percent": (
+                        s3e_global_pose["metrics"][
+                            "dense_cross_agent_relative_improvement_percent"
+                        ]
+                    ),
+                    "s3e_cross_agent_only_global_ate_m": (
+                        s3e_global_pose["metrics"][
+                            "dense_cross_agent_only_global_ate_m"
+                        ]
+                    ),
+                    "s3e_cross_agent_factor_rate_per_minute": (
+                        s3e_global_pose["metrics"][
+                            "dense_cross_agent_factor_rate_per_minute"
+                        ]
+                    ),
+                    "s3e_cross_agent_relative_rmse_at_0_05m_noise": (
+                        s3e_global_pose["metrics"][
+                            "cross_agent_relative_rmse_at_0_05m_translation_noise_m"
+                        ]
+                    ),
+                    "s3e_cross_agent_relative_rmse_at_0_2m_noise": (
+                        s3e_global_pose["metrics"][
+                            "cross_agent_relative_rmse_at_0_2m_translation_noise_m"
+                        ]
+                    ),
+                    "s3e_target_ate_m": s3e_global_pose["metrics"][
+                        "target_global_ate_m"
+                    ],
+                    "s3e_correction_interval_s": s3e_global_pose["metrics"][
+                        "selected_correction_interval_seconds"
+                    ],
+                    "s3e_messages_per_minute": s3e_global_pose["metrics"][
+                        "selected_correction_messages_per_minute_per_agent"
+                    ],
+                    "s3e_selected_correction_count": s3e_global_pose["metrics"][
+                        "selected_global_correction_count"
+                    ],
+                    "s3e_fixed_correction_count": s3e_global_pose["metrics"][
+                        "fixed_global_correction_count"
+                    ],
+                    "s3e_correction_load_reduction_percent": s3e_global_pose["metrics"][
+                        "selected_correction_load_reduction_percent"
+                    ],
+                    "s3e_scheduler_demand_error_m": s3e_global_pose["metrics"][
+                        "selected_scheduler_demand_error_m"
+                    ],
+                    "s3e_capacity_override_cycles": s3e_global_pose["metrics"][
+                        "selected_capacity_override_cycle_count"
+                    ],
+                    "s3e_messages_per_minute_by_agent": s3e_global_pose["details"][
+                        "intelligence_load"
+                    ]["messages_per_minute_by_agent"],
+                    "s3e_corrections_by_agent": s3e_global_pose["details"][
+                        "intelligence_load"
+                    ]["correction_count_by_agent"],
+                    "s3e_payload_bytes": s3e_global_pose["metrics"][
+                        "selected_correction_payload_bytes_total"
+                    ],
+                    "s3e_report_payload_bytes": S3E_GLOBAL_POSE.stat().st_size,
+                    "s3e_optimization_latency_ms": s3e_global_pose["metrics"][
+                        "optimization_latency_ms"
+                    ],
+                    "s3e_rotation_rationalization_constraints": s3e_global_pose[
+                        "metrics"
+                    ]["rotation_rationalization_constraint_count"],
+                    "s3e_rotation_rationalization_iterations": s3e_global_pose[
+                        "metrics"
+                    ]["rotation_rationalization_iterations"],
+                    "s3e_constraint_rotation_rmse_rad": s3e_global_pose["metrics"][
+                        "optimized_constraint_rotation_rmse_rad"
+                    ],
+                    "s3e_maximum_translation_noise_m": s3e_global_pose["metrics"][
+                        "maximum_tested_correction_noise_m_for_target"
+                    ],
+                    "s3e_maximum_rotation_noise_rad": s3e_global_pose["metrics"][
+                        "maximum_tested_correction_rotation_noise_rad_for_target"
+                    ],
+                    "s3e_strategy": s3e_global_pose["metrics"][
+                        "selected_correction_strategy"
+                    ],
+                    "s3e_position_claim_eligible": s3e_global_pose["metrics"][
+                        "position_claim_eligible"
+                    ],
+                    "s3e_full_pose_claim_eligible": s3e_global_pose["metrics"][
+                        "full_pose_claim_eligible"
+                    ],
+                    "s3e_real_vio_target_met": sum(
+                        report["metrics"]["target_ate_met"]
+                        for report in s3e_vio.values()
+                    ),
+                    "s3e_real_vio_agent_count": len(s3e_vio),
+                    "s3e_real_vio_worst_ate_m": max(
+                        report["metrics"]["ate_rmse_m"] for report in s3e_vio.values()
+                    ),
+                    "s3e_real_vio_max_required_messages_per_minute": max(
+                        report["metrics"]["correction_messages_per_minute_for_0_1m"]
+                        for report in s3e_vio.values()
+                    ),
+                    "s3e_real_vio_unrecoverable_agents": sum(
+                        not report["metrics"].get(
+                            "correction_target_reachable_with_tested_intervals",
+                            report["metrics"][
+                                "maximum_correction_interval_seconds_for_0_1m"
+                            ]
+                            > 0,
+                        )
+                        for report in s3e_vio.values()
+                    ),
+                    "s3e_sensor_contract_passes": sum(
+                        int(report["metrics"].get("s3e_sensor_contract_healthy", 0))
+                        for report in s3e_vio.values()
+                    ),
+                    "s3e_carol_corrected_ate_m": s3e_carol_geometry_corrected[
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_carol_corrected_pose_count": s3e_carol_geometry_corrected[
+                        "metrics"
+                    ]["trajectory_pose_count"],
+                    "s3e_carol_corrected_lost_frames": s3e_carol_geometry_corrected[
+                        "metrics"
+                    ]["lost_frame_count"],
+                    "s3e_carol_corrected_resets": s3e_carol_geometry_corrected[
+                        "metrics"
+                    ]["map_reset_count"],
+                    "s3e_carol_replicate_ate_median": (
+                        s3e_carol_reproducibility["metrics"]["ate_rmse_m_median"]
+                    ),
+                    "s3e_carol_replicate_ate_min": (
+                        s3e_carol_reproducibility["metrics"]["ate_rmse_m_min"]
+                    ),
+                    "s3e_carol_replicate_ate_max": (
+                        s3e_carol_reproducibility["metrics"]["ate_rmse_m_max"]
+                    ),
+                    "s3e_carol_reproducible": s3e_carol_reproducibility["metrics"][
+                        "trajectory_reproducible"
+                    ],
+                    "s3e_alpha_replicate_ate_median": (
+                        s3e_alpha_reproducibility["metrics"]["ate_rmse_m_median"]
+                    ),
+                    "s3e_alpha_replicate_ate_min": (
+                        s3e_alpha_reproducibility["metrics"]["ate_rmse_m_min"]
+                    ),
+                    "s3e_alpha_replicate_ate_max": (
+                        s3e_alpha_reproducibility["metrics"]["ate_rmse_m_max"]
+                    ),
+                    "s3e_alpha_deterministic_ate_min": (
+                        s3e_alpha_deterministic_reproducibility["metrics"][
+                            "ate_rmse_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_deterministic_ate_max": (
+                        s3e_alpha_deterministic_reproducibility["metrics"][
+                            "ate_rmse_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_deterministic_sim3_min": (
+                        s3e_alpha_deterministic_reproducibility["metrics"][
+                            "sim3_ate_rmse_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_deterministic_sim3_max": (
+                        s3e_alpha_deterministic_reproducibility["metrics"][
+                            "sim3_ate_rmse_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_deterministic_reproducible": (
+                        s3e_alpha_deterministic_reproducibility["metrics"][
+                            "trajectory_reproducible"
+                        ]
+                    ),
+                    "s3e_alpha_mapping_sync_ate_min": (
+                        s3e_alpha_mapping_sync_reproducibility["metrics"][
+                            "ate_rmse_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_mapping_sync_ate_max": (
+                        s3e_alpha_mapping_sync_reproducibility["metrics"][
+                            "ate_rmse_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_mapping_sync_sim3_min": (
+                        s3e_alpha_mapping_sync_reproducibility["metrics"][
+                            "sim3_ate_rmse_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_mapping_sync_sim3_max": (
+                        s3e_alpha_mapping_sync_reproducibility["metrics"][
+                            "sim3_ate_rmse_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_mapping_sync_reproducible": (
+                        s3e_alpha_mapping_sync_reproducibility["metrics"][
+                            "trajectory_reproducible"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_target_pass_count": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_target_pass_count"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_sim3_ate_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_sim3_ate_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_sim3_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_sim3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_se3_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_se3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_anchor_rate": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_anchor_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_native_rtk_correction_rate": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_native_rtk_correction_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_segment_hold_target_pass_count": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_target_pass_count"
+                        ]
+                    ),
+                    "s3e_alpha_segment_hold_ate_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_sim3_ate_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_segment_hold_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_sim3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_segment_hold_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_sim3_ate_m_max"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "causal_segment_hold_native_rtk_sim3_ate_m"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "causal_segment_hold_native_rtk_sim3_ate_m"
+                        ],
+                    },
+                    "s3e_segment_hold_updates_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_updates_per_minute_max"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "causal_segment_hold_native_rtk_prediction_updates_per_minute"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "causal_segment_hold_native_rtk_prediction_updates_per_minute"
+                        ],
+                    },
+                    "s3e_alpha_segment_hold_horizon_ate": {
+                        "0.1": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_horizon_0_1s_ate_m_max"
+                        ],
+                        "0.2": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_horizon_0_2s_ate_m_max"
+                        ],
+                        "0.5": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_horizon_0_5s_ate_m_max"
+                        ],
+                        "1.0": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_horizon_1s_ate_m_max"
+                        ],
+                    },
+                    "s3e_alpha_segment_hold_required_observation_rate": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_minimum_observation_rate_per_minute_max"
+                        ]
+                    ),
+                    "s3e_segment_hold_target_horizon_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "causal_segment_hold_native_rtk_maximum_target_horizon_seconds_min"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "causal_segment_hold_native_rtk_maximum_target_horizon_seconds"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "causal_segment_hold_native_rtk_maximum_target_horizon_seconds"
+                        ],
+                    },
+                    "s3e_alpha_fixed_lag_target_pass_count": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_target_pass_count"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_sim3_ate_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_sim3_ate_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_sim3_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_sim3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_se3_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_se3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_coverage_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_pose_coverage_fraction_min"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_updates_per_minute": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_finalization_updates_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_latency_mean_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_latency_mean_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_latency_p95_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_latency_p95_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_latency_max_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_latency_max_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_scale_p05_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_scale_p05_min"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_scale_p95_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_scale_p95_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_scale_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_scale_max"
+                        ]
+                    ),
+                    "s3e_alpha_fixed_lag_scale_plausible_fraction": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_scale_plausible_fraction_min"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_target_pass_count": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_target_pass_count"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_ate_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_sim3_ate_m_min"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_sim3_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_updates_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_updates_per_minute_min"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_updates_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_updates_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_reduction_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_update_reduction_percent_min"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_reduction_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_update_reduction_percent_max"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_latency_mean_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_latency_mean_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_latency_p95_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_latency_p95_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_adaptive_fixed_lag_latency_max_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_latency_max_seconds_max"
+                        ]
+                    ),
+                    "s3e_adaptive_fixed_lag_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_sim3_ate_m_max"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "adaptive_fixed_lag_native_rtk_sim3_ate_m"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "adaptive_fixed_lag_native_rtk_sim3_ate_m"
+                        ],
+                    },
+                    "s3e_adaptive_fixed_lag_updates_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "adaptive_fixed_lag_native_rtk_updates_per_minute_max"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "adaptive_fixed_lag_native_rtk_finalization_updates_per_minute"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "adaptive_fixed_lag_native_rtk_finalization_updates_per_minute"
+                        ],
+                    },
+                    "s3e_fixed_lag_by_agent": {
+                        "Alpha": s3e_alpha_reproducibility["metrics"][
+                            "fixed_lag_native_rtk_sim3_ate_m_max"
+                        ],
+                        "Bob": s3e_vio["bob"]["metrics"][
+                            "fixed_lag_native_rtk_sim3_ate_m"
+                        ],
+                        "Carol": s3e_carol_geometry_corrected["metrics"][
+                            "fixed_lag_native_rtk_sim3_ate_m"
+                        ],
+                    },
+                    "s3e_native_rtk_by_agent": {
+                        "Alpha": {
+                            "ate_m": s3e_alpha_reproducibility["metrics"][
+                                "causal_native_rtk_sim3_ate_m_max"
+                            ],
+                            "anchor_rate": s3e_alpha_reproducibility["metrics"][
+                                "causal_native_rtk_anchor_messages_per_minute_max"
+                            ],
+                            "correction_rate": s3e_alpha_reproducibility["metrics"][
+                                "causal_native_rtk_correction_messages_per_minute_max"
+                            ],
+                            "target_met": bool(
+                                s3e_alpha_reproducibility["metrics"][
+                                    "causal_native_rtk_target_pass_count"
+                                ]
+                                == s3e_alpha_reproducibility["metrics"][
+                                    "replicate_count"
+                                ]
+                            ),
+                        },
+                        "Bob": {
+                            "ate_m": s3e_vio["bob"]["metrics"][
+                                "causal_native_rtk_sim3_ate_m"
+                            ],
+                            "anchor_rate": s3e_vio["bob"]["metrics"][
+                                "causal_native_rtk_anchor_messages_per_minute"
+                            ],
+                            "correction_rate": s3e_vio["bob"]["metrics"][
+                                "causal_native_rtk_sim3_correction_messages_per_minute"
+                            ],
+                            "target_met": bool(
+                                s3e_vio["bob"]["metrics"][
+                                    "causal_native_rtk_sim3_target_met"
+                                ]
+                            ),
+                        },
+                        "Carol": {
+                            "ate_m": s3e_carol_geometry_corrected["metrics"][
+                                "causal_native_rtk_sim3_ate_m"
+                            ],
+                            "anchor_rate": s3e_carol_geometry_corrected["metrics"][
+                                "causal_native_rtk_anchor_messages_per_minute"
+                            ],
+                            "correction_rate": s3e_carol_geometry_corrected["metrics"][
+                                "causal_native_rtk_sim3_correction_messages_per_minute"
+                            ],
+                            "target_met": bool(
+                                s3e_carol_geometry_corrected["metrics"][
+                                    "causal_native_rtk_sim3_target_met"
+                                ]
+                            ),
+                        },
+                    },
+                    "s3e_alpha_replicate_load_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_messages_per_minute_min"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_load_median": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_messages_per_minute_median"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_load_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_peak_per_second": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_burst_per_second_max"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_min_interval_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_interval_min_seconds_min"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_causal_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_anchor_load_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_anchor_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_threshold_min": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_threshold_m"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_threshold_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_threshold_m"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_hold_p95_max_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_interval_p95_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_replicate_hold_max_s": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_low_ingress_correction_interval_max_seconds_max"
+                        ]
+                    ),
+                    "s3e_alpha_radio_min_ate_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_reference_ate_m_max"
+                        ]
+                    ),
+                    "s3e_alpha_radio_min_correction_load_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_reference_correction_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_radio_min_anchor_load_max": (
+                        s3e_alpha_reproducibility["metrics"][
+                            "causal_sim3_reference_anchor_messages_per_minute_max"
+                        ]
+                    ),
+                    "s3e_alpha_reproducible": s3e_alpha_reproducibility["metrics"][
+                        "trajectory_reproducible"
+                    ],
+                    "s3e_openvins_ate_m": s3e_openvins["metrics"]["ate_rmse_m"],
+                    "s3e_openvins_sim3_ate_m": s3e_openvins["metrics"][
+                        "sim3_ate_rmse_m"
+                    ],
+                    "s3e_openvins_scale_correction": s3e_openvins["metrics"][
+                        "metric_scale_correction_to_truth"
+                    ],
+                    "s3e_openvins_event_messages_per_minute": s3e_openvins["metrics"][
+                        "event_triggered_messages_per_minute_for_0_1m"
+                    ],
+                    "s3e_openvins_event_peak_per_second": s3e_openvins["metrics"][
+                        "event_triggered_peak_corrections_per_second"
+                    ],
+                    "s3e_openvins_tracking_healthy": s3e_openvins["metrics"][
+                        "tracking_healthy"
+                    ],
+                    "s3e_alpha_stereo_ate_m": s3e_alpha_modes["stereo"]["metrics"][
+                        "ate_rmse_m"
+                    ],
+                    "s3e_alpha_calibrated_ate_m": s3e_alpha_modes["calibrated_500"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_calibrated_scale_correction": s3e_alpha_modes[
+                        "calibrated_500"
+                    ]["metrics"]["metric_scale_correction_to_truth"],
+                    "s3e_alpha_long_ate_m": s3e_alpha_modes["calibrated_1000"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_long_map_resets": s3e_alpha_modes["calibrated_1000"][
+                        "metrics"
+                    ]["map_reset_count"],
+                    "s3e_alpha_long_lost_frames": s3e_alpha_modes["calibrated_1000"][
+                        "metrics"
+                    ]["lost_frame_count"],
+                    "s3e_alpha_event_messages_per_minute": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["event_triggered_messages_per_minute_for_0_1m"],
+                    "s3e_alpha_event_rate_reduction_percent": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["event_triggered_rate_reduction_vs_periodic_percent"],
+                    "s3e_alpha_event_min_interval_s": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["event_triggered_min_interval_seconds"],
+                    "s3e_alpha_event_peak_per_second": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["event_triggered_peak_corrections_per_second"],
+                    "s3e_alpha_orientation_reference_available": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["orientation_reference_available"],
+                    "s3e_alpha_orientation_proxy_rmse_rad": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["orientation_proxy_rmse_rad"],
+                    "s3e_alpha_orientation_proxy_p95_rad": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["orientation_proxy_p95_rad"],
+                    "s3e_alpha_orientation_proxy_rpe_rmse_rad": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["orientation_proxy_rpe_rmse_rad"],
+                    "s3e_alpha_orientation_proxy_independent": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["orientation_proxy_independent_of_vio"],
+                    "s3e_alpha_stereo_orientation_proxy_rmse_rad": s3e_alpha_modes[
+                        "stereo"
+                    ]["metrics"]["orientation_proxy_rmse_rad"],
+                    "s3e_alpha_stereo_orientation_proxy_independent": s3e_alpha_modes[
+                        "stereo"
+                    ]["metrics"]["orientation_proxy_independent_of_vio"],
+                    "s3e_alpha_first_quarter_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["ate_first_quarter_m"],
+                    "s3e_alpha_middle_half_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["ate_middle_half_m"],
+                    "s3e_alpha_last_quarter_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["ate_last_quarter_m"],
+                    "s3e_alpha_peak_error_fraction": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["peak_error_trajectory_fraction"],
+                    "s3e_alpha_timing_best_offset_ms": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["timing_best_ate_offset_ms"],
+                    "s3e_alpha_timing_gain_percent": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["timing_ate_improvement_percent"],
+                    "s3e_alpha_timing_dominant": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["timing_offset_is_dominant"],
+                    "s3e_alpha_high_recall_ate_m": s3e_alpha_modes["high_recall_1000"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_late_default_ate_m": s3e_alpha_modes[
+                        "late_default_1000"
+                    ]["metrics"]["ate_rmse_m"],
+                    "s3e_alpha_late_scaled_ate_m": s3e_alpha_modes["late_scaled_1000"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_late_scaled_residual_scale": s3e_alpha_modes[
+                        "late_scaled_1000"
+                    ]["metrics"]["metric_scale_correction_to_truth"],
+                    "s3e_alpha_fast_init_ate_m": s3e_alpha_modes["fast_init_1000"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_fast_init_p95_m": s3e_alpha_modes["fast_init_1000"][
+                        "metrics"
+                    ]["error_p95_m"],
+                    "s3e_alpha_fast_init_map_resets": s3e_alpha_modes["fast_init_1000"][
+                        "metrics"
+                    ]["map_reset_count"],
+                    "s3e_alpha_fast_init_lost_frames": s3e_alpha_modes[
+                        "fast_init_1000"
+                    ]["metrics"]["lost_frame_count"],
+                    "s3e_alpha_best_ate_m": s3e_alpha_modes["fast_init_scaled_1000"][
+                        "metrics"
+                    ]["ate_rmse_m"],
+                    "s3e_alpha_best_sim3_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["sim3_ate_rmse_m"],
+                    "s3e_alpha_best_scale_correction": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["metric_scale_correction_to_truth"],
+                    "s3e_alpha_best_p95_m": s3e_alpha_modes["fast_init_scaled_1000"][
+                        "metrics"
+                    ]["error_p95_m"],
+                    "s3e_alpha_best_final_drift_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["final_drift_m"],
+                    "s3e_alpha_lever_arm_maximum_norm_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_maximum_norm_m"],
+                    "s3e_alpha_lever_arm_fitted_norm_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_fitted_norm_m"],
+                    "s3e_alpha_lever_arm_unconstrained_norm_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_unconstrained_norm_m"],
+                    "s3e_alpha_lever_arm_bound_active": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_bound_active"],
+                    "s3e_alpha_lever_arm_adjusted_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_adjusted_ate_m"],
+                    "s3e_alpha_lever_arm_full_improvement_percent": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["lever_arm_sensitivity_full_fit_improvement_percent"],
+                    "s3e_alpha_lever_arm_holdout_improvement_percent": (
+                        s3e_alpha_modes["fast_init_scaled_1000"]["metrics"][
+                            "lever_arm_sensitivity_holdout_improvement_percent"
+                        ]
+                    ),
+                    "s3e_alpha_local_rigid_1s_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_alignment_1s_rigid_ate_m"],
+                    "s3e_alpha_local_sim3_2s_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_alignment_2s_sim3_ate_m"],
+                    "s3e_alpha_local_rigid_interval_s": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_rigid_maximum_passing_interval_seconds"],
+                    "s3e_alpha_local_rigid_messages_per_minute": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_rigid_optimistic_anchor_messages_per_minute"],
+                    "s3e_alpha_local_sim3_interval_s": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_sim3_maximum_passing_interval_seconds"],
+                    "s3e_alpha_local_sim3_messages_per_minute": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_sim3_optimistic_anchor_messages_per_minute"],
+                    "s3e_alpha_local_5s_scale_p05": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_alignment_5s_scale_p05"],
+                    "s3e_alpha_local_5s_scale_p95": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["local_alignment_5s_scale_p95"],
+                    "s3e_alpha_stereo_local_sim3_0_5s_ate_m": s3e_alpha_modes["stereo"][
+                        "metrics"
+                    ]["local_alignment_0_5s_sim3_ate_m"],
+                    "s3e_bob_local_sim3_0_5s_ate_m": s3e_vio["bob"]["metrics"][
+                        "local_alignment_0_5s_sim3_ate_m"
+                    ],
+                    "s3e_carol_local_sim3_0_5s_ate_m": s3e_vio["carol"]["metrics"][
+                        "local_alignment_0_5s_sim3_ate_m"
+                    ],
+                    "s3e_alpha_causal_se3_cadence_s": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_se3_maximum_passing_cadence_seconds"],
+                    "s3e_alpha_causal_se3_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_se3_ate_at_selected_cadence_m"],
+                    "s3e_alpha_causal_se3_messages_per_minute": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_se3_anchor_messages_per_minute"],
+                    "s3e_alpha_causal_se3_jump_p95_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_se3_correction_jump_p95_m"],
+                    "s3e_alpha_causal_sim3_cadence_s": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_sim3_maximum_passing_cadence_seconds"],
+                    "s3e_alpha_causal_sim3_ate_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_sim3_ate_at_selected_cadence_m"],
+                    "s3e_alpha_causal_sim3_messages_per_minute": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_sim3_anchor_messages_per_minute"],
+                    "s3e_alpha_causal_sim3_jump_p95_m": s3e_alpha_modes[
+                        "fast_init_scaled_1000"
+                    ]["metrics"]["causal_sim3_correction_jump_p95_m"],
+                    "s3e_alpha_causal_sim3_scale_update_p95_percent": (
+                        100.0
+                        * (
+                            math.exp(
+                                s3e_alpha_modes["fast_init_scaled_1000"]["metrics"][
+                                    "causal_sim3_scale_update_p95_log"
+                                ]
+                            )
+                            - 1.0
+                        )
+                    ),
+                    "s3e_local_alignment_profiles": local_alignment_profiles,
+                    "s3e_capacity_configured_evaluation_period_s": (
+                        scheduling_config.evaluation_period_seconds
+                    ),
+                    "s3e_capacity_recommended_evaluation_period_s": (
+                        correction_capacity.recommended_maximum_evaluation_period_s
+                    ),
+                    "s3e_capacity_feasible": correction_capacity.feasible,
+                    "s3e_capacity_action": correction_capacity.action,
+                    "s3e_capacity_configured_messages_per_minute": (
+                        correction_capacity.configured_messages_per_minute_capacity
+                    ),
+                    "s3e_capacity_required_messages_per_minute": (
+                        correction_capacity.total_messages_per_minute
+                    ),
+                    "s3e_capacity_suppressed_messages_per_minute": (
+                        correction_capacity.suppressed_messages_per_minute
+                    ),
+                    "s3e_capacity_configured_peak_per_second": (
+                        correction_capacity.configured_peak_corrections_per_second
+                    ),
+                    "s3e_capacity_required_peak_per_second": (
+                        correction_capacity.peak_corrections_per_second
+                    ),
+                    "s3e_capacity_suppressed_peak_per_second": (
+                        correction_capacity.suppressed_peak_corrections_per_second
+                    ),
+                    "s3e_capacity_schedulable_agents": (
+                        correction_capacity.schedulable_agent_ids
+                    ),
+                    "s3e_capacity_relocalization_agents": (
+                        correction_capacity.relocalization_agent_ids
+                    ),
+                    "s3e_capacity_tracking_failure_agents": (
+                        correction_capacity.tracking_failure_agent_ids
+                    ),
+                    "s3e_capacity_live_pose_failure_agents": (
+                        correction_capacity.live_pose_failure_agent_ids
+                    ),
+                    "s3e_correction_profiles": correction_profile_details,
+                    "correction_max_rotation_step_rad": (
+                        correction_config.max_rotation_step_rad
+                    ),
+                    "correction_max_total_rotation_rad": (
+                        correction_config.max_total_rotation_rad
+                    ),
                 },
             },
             {
                 "group": "Global state",
                 "name": "Correction delta application",
                 "state": "validated",
-                "summary": "Restart-safe correction sequencing and replay suppression enforce monotonic issue time, TTL, bounded local continuity, and explicit reset-required behavior.",
-                "implementation": "ORB-SLAM3 VIO + persistent CorrectionDeltaGenerator/CorrectionApplier",
+                "summary": "Restart-safe correction sequencing, independent translation/rotation safety bounds, observable per-Wingman load envelopes, capacity assessment, and replay suppression distinguish schedulable corrections from mandatory relocalization.",
+                "implementation": "ORB-SLAM3 VIO + CorrectionCadenceScheduler + persistent correction state",
                 "visual": {
                     "kind": "correction",
                     **correction_details,
@@ -644,7 +2120,9 @@ def build_payload() -> dict[str, Any]:
                     "requested_delta_m": requested_delta_m,
                     "frame_transform": "local_wingman_01 → global",
                     "interpretation": "frame alignment demonstration; no post-correction ATE claim",
-                    "state_restored": global_scene["metrics"]["correction_state_restored"],
+                    "state_restored": global_scene["metrics"][
+                        "correction_state_restored"
+                    ],
                     "restart_duplicate_rejected": global_scene["metrics"][
                         "correction_duplicate_after_restart_rejected"
                     ],
@@ -677,7 +2155,9 @@ def build_payload() -> dict[str, Any]:
                     "source": "UnifiedContext snapshot",
                     "destination": "SKYLA planning interface",
                     "frame": operations["details"]["handoff"]["frame"],
-                    "scene_revision": operations["details"]["handoff"]["scene_revision"],
+                    "scene_revision": operations["details"]["handoff"][
+                        "scene_revision"
+                    ],
                     "nodes": operations["details"]["handoff"]["nodes"],
                     "edges": operations["details"]["handoff"]["edges"],
                     "degraded": operations["details"]["handoff"]["degraded"],
@@ -691,7 +2171,9 @@ def build_payload() -> dict[str, Any]:
                     ],
                     "gates": [
                         name
-                        for name, passed in operations["details"]["handoff"]["gates"].items()
+                        for name, passed in operations["details"]["handoff"][
+                            "gates"
+                        ].items()
                         if passed
                     ],
                 },
@@ -715,7 +2197,12 @@ def build_payload() -> dict[str, Any]:
                         "excluded_vehicles"
                     ],
                     "stages": operations["details"]["skyla_planning"]["stages"],
-                    "feedback": ["execution state", "map changes", "node failure", "replan"],
+                    "feedback": [
+                        "execution state",
+                        "map changes",
+                        "node failure",
+                        "replan",
+                    ],
                     "global_authority": "Intelligence Node",
                     "local_authority": "Wingman collision avoidance + flight safety",
                 },
@@ -802,15 +2289,44 @@ def build_payload() -> dict[str, Any]:
                 "visual": {
                     "kind": "evidence",
                     "tests": ARIADNE_TEST_COUNT,
-                    "reports": len(datasets) + 7,
+                    "reports": len(datasets) + 9,
                     "status": phase1["status"],
                 },
             },
         ],
         "gaps": [
-            "Run both production VIO backends on identical full replay windows before ranking them.",
+            "Static-asynchronous S3E fusion produced one 184,320-Gaussian PLY from independently timed Alpha, Bob, and Carol ReSplat windows. Offline truth-fitted registration is 1.28/13.31/9.12 m RMSE and Bob/Carol scales are implausible; directional SH was not rebased after rotation, so metric and appearance claims remain closed.",
+            "MILUV real full-SE(3) truth passes at 0.0195 m ATE and 0.0069 rad orientation RMSE, but local odometry and cross-agent relative-pose observations remain controlled; production VIO and visual association are not validated by this result.",
+            "MILUV delayed position-only UWB corrections stop at 0.1430 m ATE even at 58.2 messages/min, so independently solved scalar-range corrections do not meet the 0.1 m target.",
+            "MILUV causal fixed-lag UWB rationalization reaches 0.0930 m fleet ATE and all three Wingmen pass on seed 7 at 17.2-23.1 messages/min; its factor inventory has no production local pose or attitude stream, so the deployment claim gate remains closed.",
+            "MILUV full-batch UWB reaches a 0.0783 m non-causal upper bound, while fixed-lag orientation remains controlled at 0.1069 rad; replace controlled odometry/orientation with production VIO and sparse marginalization before claiming full pose.",
+            "On the controlled MILUV trace, adaptive scheduling improves ATE to 0.0109 m but increases corrections from 15 to 18, so the 16.08-second fixed cadence remains the lower-load selection.",
+            "S3E production ORB-SLAM3 still misses 0.1 m locally. Exact native 1 Hz RTK positions stop at 0.200-0.244 m online causal Sim(3) across three Alpha runs, 1.089 m for Bob, and 1.798 m for automatic-geometry Carol; all three live Wingman poses remain relocalization cases.",
+            "Resetting Alpha to each exact RTK position and holding a ten-segment exponentially weighted past-only transform improves live-position ATE by 23.9-28.3% to 0.152-0.175 m, but yields zero target passes at 59.45 updates/min. Bob and Carol worsen to 1.364 m and 2.309 m with implausible scales, so this is an observed live limit rather than a correction candidate.",
+            "Alpha past-only live error is 0.007 m through 0.1 s and 0.072 m through 0.2 s, then misses at 0.123 m through 0.5 s and 0.175 m through 1.0 s. The fixed cross-replicate target horizon is therefore 0.2 s, implying at least 300 global observations/min versus the native 60.06/min; Bob and Carol have no passing tested horizon.",
+            "Intelligence fixed-lag rationalization uses consecutive native RTK endpoints and relative VIO motion to finalize Alpha history at 0.077-0.085 m Sim(3), with 0.539 s mean and 0.997 s maximum delay. Bob and Carol still miss at 0.420 m and 0.447 m, and the result cannot be used as a live correction claim.",
+            "Adaptive fixed-lag coalescing preserves all three Alpha finalized-map passes at 0.091-0.097 m while reducing Intelligence finalizations from 59.45 to 37.0-38.8/min (34.7-37.8%). Its p95 delay is 1.890 s and maximum delay is 1.998 s; native RTK ingress remains about 60/min and live pose remains closed.",
+            "Alpha fixed-lag segment scales remain inside the 0.5-2.0x plausibility gate but vary from 0.704x p05 to 1.311x p95, exposing time-varying VIO deformation. Bob and Carol have only 6.1% and 9.7% plausible segments, confirming tracking failure rather than a schedulable correction problem.",
+            "All three S3E Wingmen pass the independent timestamp/IMU contract. Automatic stereo geometry removes Carol's lost frames, but three identical replicates span 29.00-69.21 m ATE, 1-4 resets, and 464-491 corrections/min; reproducibility and global-pose claim gates fail.",
+            "Applying Carol's fitted 0.42x baseline lowers affine-corrected ATE to 4.97 m but reintroduces 294 lost frames and leaves a 4.88 m Sim(3) floor; static depth scaling is not a transferable calibration.",
+            "Matched 500-frame Alpha OpenVINS initializes only after raising the static excitation threshold to 1.0, then diverges to 563.2 m rigid ATE, 8.72 m Sim(3) ATE, and a 0.0225x fitted scale; its 539.1 corrections/min and 10/s peak are unschedulable, so it is rejected rather than promoted as an S3E fallback.",
+            "The per-Wingman S3E gate tolerates 0.025 m correction translation noise and 0.005 rad rotation noise at the selected load point; fleet averages can remain below 0.1 m after Carol has failed, so correction limits must be enforced per node.",
+            "Controlled dense S3E cross-Wingman factors reduce relative translation RMSE from 14.261 m to 0.133 m at 12.84 factors/min, but absolute global ATE remains 6.028 m. Raising controlled association noise from 0.05 m to 0.20 m degrades relative RMSE from 0.149 m to 0.268 m without repairing the global gauge; a measured global landmark or external observation is still required.",
+            "S3E Playground 2 publishes RTK position but identity quaternion placeholders and no RTK antenna lever arm, so real orientation accuracy and full SE(3) correction load are not observable from this reference.",
+            "S3E IMU/AHRS provides an orientation-consistency proxy: Alpha stereo-inertial is 0.032 rad RMSE with 0.0022 rad rotational RPE, but it shares the estimator IMU; stereo-only is an independent 0.299 rad check. Neither is orientation ground truth.",
+            "A fitted RTK lever-arm sensitivity cannot explain Alpha's long-window error: the fit saturates the conservative 1 m bound, leaves 1.27 m ATE, and worsens held-out ATE by 1.1%; the unconstrained fit requests 6.22 m.",
+            "Non-causal local fits put Alpha below target at 1 s with SE(3) (0.073 m, 60 anchors/min) and 2 s with Sim(3) (0.051 m, 30 anchors/min); this motivates a causal fixed-lag Intelligence-node rationalizer but does not replace the measured 0.1 s reaction requirement.",
+            "Alpha threshold-held transmission separates fit cadence from radio cadence: the balanced sensitivity reaches 0.0906-0.0937 m across three runs at 75.2-78.9 corrections/min, but it consumes 294.8 RTK-interpolated scoring anchors/min rather than native observations.",
+            "Native Alpha RTK provides 60.06 anchors/min and would transmit 58.85 corrections/min with a one/s peak, but its 0.200-0.244 m online Sim(3) ATE fails accuracy. Capacity therefore routes Alpha, Bob, and Carol to relocalization while the fixed-lag Alpha pass is reserved for delayed map finalization.",
+            "The live-capacity gate keeps tracking health separate from correction eligibility: Alpha is healthy-but-inaccurate and non-reproducible, while Bob and Carol fail tracking. Fail-closed routing suppresses 170.03 candidate corrections/min and a combined three/s peak without treating avoided traffic as recovered accuracy.",
+            "Pinning Alpha ORB-SLAM3 and its numeric libraries to one CPU does not close reproducibility: three runs span 1.005-1.559 m ATE and 0.980-1.502 m Sim(3), widening the Sim(3) spread to 0.521 m. This motivated the explicit offline local-mapping ablation.",
+            "Blocking every Alpha frame until local mapping is idle narrows the three-run ATE spread from 0.297 m to 0.242 m and the Sim(3) spread from 0.347 m to 0.175 m, but median ATE regresses from 1.341 m to 1.608 m and the reproducibility gate still fails. Local-mapper overlap is a contributor, not the root cause; next isolate remaining map-state and loop-closing divergence.",
+            "A 2,400-feature high-recall ORB profile improves local RPE but regresses Alpha ATE from 1.34 m to 2.03 m; the balanced 1,600-feature profile remains selected.",
+            "On non-overlapping Alpha frames 1000-1999, the untouched and 1.20x baselines reach 8.07 m and 4.96 m ATE; scaling helps but leaves a 1.221x residual, so one static multiplier does not generalize.",
+            "Resolve S3E metric calibration after the sensor and Carol stereo-observability boundaries before adding another VIO backend; neither matched OpenVINS nor the current ORB-SLAM3 path supports the global-pose claim.",
             "Replace reference geometric and semantic features with ALIKED/SuperPoint and DINO-family adapters.",
             "Calibrate SE(3) covariance and robust gates on real multi-agent loop closures.",
+            "Collect production Wingman telemetry to calibrate correction uncertainty, queue pressure, and relocalization recovery; artifact-derived candidate rates remain diagnostic rather than a deployable schedule.",
             "Validate real multi-agent association, correction exchange, and persistent mapping end to end.",
             "Add recovery, p50/p95 latency, peak memory, and power measurements to production gates.",
         ],
@@ -818,16 +2334,40 @@ def build_payload() -> dict[str, Any]:
             "outputs/ariadne/phase1/benchmark.json",
             "outputs/ariadne/exchange/benchmark.json",
             "outputs/ariadne/global-scene/benchmark.json",
+            "outputs/ariadne/s3e-global-gaussian-static/preparation.json",
+            "outputs/ariadne/s3e-global-gaussian-static/manifest.json",
+            "outputs/ariadne/s3e-global-gaussian-static/unified_s3e_global_gaussians.ply",
+            "outputs/ariadne/miluv-global-pose/benchmark.json",
+            "outputs/ariadne/s3e-global-pose/benchmark.json",
             "outputs/ariadne/operations/benchmark.json",
             "outputs/ariadne/end-to-end/benchmark.json",
             "outputs/ariadne/dataset_sequence/summary.json",
             "outputs/ariadne/real_vio/d2slam-1/openvins/evaluation.json",
             "outputs/ariadne/real_vio/d2slam-1/orbslam3/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/openvins/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-bob/orbslam3/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-carol/orbslam3/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-carol/orbslam3-auto-geometry-reproducibility.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init-reproducibility.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init-deterministic-reproducibility.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init-mapping-sync-reproducibility.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-stereo/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.15/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.15-1000/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.15-fast-init/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init-high-recall/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-fast-init-start-1000/evaluation.json",
+            "outputs/ariadne/real_vio/s3e-alpha/orbslam3-bf-1.2-fast-init-start-1000/evaluation.json",
             "outputs/ariadne/resplat_report/neighbourhood_105_10f/metrics.json",
             str(resplat_render.relative_to(ROOT)),
             RESPLAT_RUN_URL,
             "applications/ariadne/docs/phase1_models.md",
             "applications/ariadne/docs/real_vio.md",
+            "applications/ariadne/docs/static_asynchronous_global_gaussians.md",
+            "applications/ariadne/docs/vio_global_pose_experiment_log.md",
+            "applications/ariadne/configs/intelligence/default.yaml",
         ],
     }
 
@@ -943,6 +2483,38 @@ HTML = r"""<!doctype html>
     .metric-definition { min-height: 112px; padding: 15px; background: var(--surface); }
     .metric-definition strong { display: block; font-size: 12px; }
     .metric-definition p { margin: 7px 0 0; color: var(--muted); font-size: 11px; }
+    .progression-summary { margin: 0 0 22px; padding: 16px 18px; border-left: 3px solid var(--blue); background: var(--blue-soft); color: #385268; font-size: 13px; }
+    .progression-summary strong { color: var(--ink); }
+    .progression-card { overflow: hidden; margin-top: 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .progression-card header { padding: 19px 22px 15px; border-bottom: 1px solid var(--line); }
+    .progression-card h3 { margin: 0; font-size: 18px; }
+    .progression-card header p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+    .progression-chart { overflow-x: auto; padding: 12px 16px 6px; }
+    .progression-chart svg { display: block; width: 100%; min-width: 920px; height: auto; }
+    .progression-reading { margin: 0; padding: 14px 22px 18px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .progression-reading strong { color: var(--ink); }
+    .progression-table-wrap { overflow-x: auto; }
+    .progression-table { width: 100%; min-width: 960px; border-collapse: collapse; font-size: 11px; }
+    .progression-table th, .progression-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .progression-table th { background: #f0f3f1; color: #4e5a54; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+    .progression-table tbody tr:last-child td { border-bottom: 0; }
+    .progression-table td:nth-child(3), .progression-table td:nth-child(4), .progression-table td:nth-child(5) { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+    .progression-table .metric-improved { color: var(--green); font-weight: 760; }
+    .progression-table .metric-regressed { color: var(--amber); font-weight: 760; }
+    .progression-caveat { margin: 18px 0 0; color: var(--muted); font-size: 12px; }
+    .fusion-shell { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .fusion-status { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--line); }
+    .fusion-metric { min-height: 112px; padding: 19px; border-right: 1px solid var(--line); }
+    .fusion-metric:last-child { border-right: 0; }
+    .fusion-metric strong { display: block; font-size: 23px; }
+    .fusion-metric span { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .fusion-detail { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); gap: 28px; padding: 23px; }
+    .fusion-detail h3 { margin: 0 0 8px; font-size: 17px; }
+    .fusion-detail p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+    .fusion-detail code { display: block; margin-top: 7px; color: #405048; font-size: 10px; overflow-wrap: anywhere; }
+    .fusion-warning { padding: 14px 16px; border-left: 3px solid var(--amber); background: var(--amber-soft); color: #664318; font-size: 12px; }
+    .fusion-links { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 15px; }
+    .fusion-links a { padding: 8px 11px; border: 1px solid #bfc8c3; border-radius: 4px; color: var(--blue); font-size: 11px; font-weight: 720; text-decoration: none; }
     .pipeline { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; border: 1px solid var(--line); background: var(--line); }
     .pipeline-step { position: relative; min-height: 132px; padding: 17px 14px; background: var(--surface); }
     .pipeline-step b { display: block; color: var(--muted); font-size: 11px; }
@@ -999,6 +2571,46 @@ HTML = r"""<!doctype html>
     .dataset-card .signals { min-height: 39px; margin: 18px 0 0; font-size: 12px; font-weight: 700; }
     .dataset-card p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
     .dataset-card .limit { color: #75464b; }
+    .docs-shell { display: grid; grid-template-columns: minmax(260px, .68fr) minmax(0, 1.7fr); gap: 24px; align-items: start; }
+    .docs-sidebar { position: sticky; top: 78px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .docs-search-wrap { display: block; padding: 16px; border-bottom: 1px solid var(--line); }
+    .docs-search-wrap span { display: block; margin-bottom: 7px; color: var(--muted); font-size: 11px; font-weight: 760; letter-spacing: .04em; text-transform: uppercase; }
+    .docs-search { width: 100%; min-height: 40px; padding: 8px 11px; border: 1px solid #bfc8c3; border-radius: 4px; background: #fff; color: var(--ink); font: inherit; font-size: 13px; }
+    .docs-search:focus-visible { outline: 3px solid rgba(47,98,139,.2); border-color: var(--blue); }
+    .docs-count { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+    .docs-nav { max-height: min(66vh, 720px); overflow-y: auto; padding: 8px; }
+    .docs-group + .docs-group { margin-top: 12px; }
+    .docs-group h3 { margin: 0; padding: 5px 8px; color: var(--muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
+    .doc-link { display: block; width: 100%; padding: 9px 10px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+    .doc-link:hover, .doc-link:focus-visible { background: #eef2ef; outline: none; }
+    .doc-link.active { background: var(--green-soft); color: #15583c; }
+    .doc-link strong { display: block; font-size: 12px; line-height: 1.3; }
+    .doc-link span { display: block; margin-top: 3px; color: var(--muted); font: 9px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .docs-empty { padding: 20px 10px; color: var(--muted); font-size: 12px; text-align: center; }
+    .docs-reader { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .docs-reader-head { padding: 21px 24px; border-bottom: 1px solid var(--line); background: #f8faf8; }
+    .docs-reader-head h3 { margin: 0; font-size: 22px; line-height: 1.25; }
+    .docs-reader-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .markdown-body { padding: 28px 30px 42px; color: #28312c; font-size: 14px; overflow-wrap: anywhere; }
+    .markdown-body > :first-child { margin-top: 0; }
+    .markdown-body > :last-child { margin-bottom: 0; }
+    .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4, .markdown-body h5, .markdown-body h6 { margin: 1.6em 0 .55em; color: var(--ink); line-height: 1.25; }
+    .markdown-body h1 { padding-bottom: .35em; border-bottom: 1px solid var(--line); font-size: 28px; }
+    .markdown-body h2 { padding-bottom: .3em; border-bottom: 1px solid var(--line); font-size: 22px; }
+    .markdown-body h3 { font-size: 18px; }
+    .markdown-body h4 { font-size: 15px; }
+    .markdown-body p { margin: .8em 0; }
+    .markdown-body a { color: var(--blue); }
+    .markdown-body ul, .markdown-body ol { padding-left: 1.7em; }
+    .markdown-body li + li { margin-top: .28em; }
+    .markdown-body blockquote { margin: 1em 0; padding: 3px 16px; border-left: 3px solid var(--blue); background: var(--blue-soft); color: #385268; }
+    .markdown-body code { padding: 2px 5px; border-radius: 3px; background: #edf0ee; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .markdown-body pre { overflow-x: auto; margin: 1em 0; padding: 16px; border-radius: 5px; background: #151a17; color: #e2e9e5; }
+    .markdown-body pre code { padding: 0; background: transparent; color: inherit; }
+    .markdown-body table { display: block; width: max-content; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+    .markdown-body th, .markdown-body td { min-width: 110px; padding: 8px 10px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .markdown-body th { background: #f0f3f1; }
+    .markdown-body hr { margin: 2em 0; border: 0; border-top: 1px solid var(--line); }
     .gap-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, .9fr); gap: 44px; }
     .gap-list { margin: 0; padding: 0; list-style: none; counter-reset: gaps; }
     .gap-list li { counter-increment: gaps; display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 15px 0; border-bottom: 1px solid var(--line); }
@@ -1020,9 +2632,14 @@ HTML = r"""<!doctype html>
     .sources { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 20px; }
     .sources code { color: #bdc8c2; font-size: 10px; overflow-wrap: anywhere; }
     @media (max-width: 980px) {
+      .section-head { grid-template-columns: 1fr; gap: 12px; }
+      .nav-links { gap: 12px; }
+      .nav-links a { font-size: 11px; }
       .dataset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .component { grid-template-columns: minmax(220px, .8fr) minmax(350px, 1.2fr); }
       .pipeline { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .fusion-detail { grid-template-columns: 1fr; }
+      .docs-shell { grid-template-columns: minmax(230px, .62fr) minmax(0, 1.38fr); }
     }
     @media (max-width: 720px) {
       .site-nav { padding: 0 18px; }
@@ -1039,11 +2656,18 @@ HTML = r"""<!doctype html>
       .result-grid, .gap-layout, .footer-grid { grid-template-columns: 1fr; }
       .metric-guide-grid { grid-template-columns: 1fr 1fr; }
       .pipeline { grid-template-columns: 1fr 1fr; }
+      .fusion-status { grid-template-columns: 1fr 1fr; }
+      .fusion-metric:nth-child(2) { border-right: 0; }
+      .fusion-metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
       .component { grid-template-columns: 1fr; }
       .component-copy { min-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
       .component-visual { padding: 14px; }
       .dataset-grid, .sources { grid-template-columns: 1fr; }
       .dataset-card { min-height: auto; }
+      .docs-shell { grid-template-columns: 1fr; }
+      .docs-sidebar { position: static; }
+      .docs-nav { max-height: 330px; }
+      .markdown-body { padding: 22px 18px 32px; }
     }
     @media (max-width: 460px) {
       .metric-guide-grid { grid-template-columns: 1fr; }
@@ -1055,8 +2679,11 @@ HTML = r"""<!doctype html>
     <span class="brand">ARIADNE / STATUS</span>
     <div class="nav-links">
       <a href="#results">Results</a>
+      <a href="#progression">Progress</a>
+      <a href="#global-gaussians">Global splat</a>
       <a href="#components">Components</a>
       <a href="#datasets">Datasets</a>
+      <a href="#documentation">Documentation</a>
       <a href="#gaps">Next</a>
     </div>
   </nav>
@@ -1099,6 +2726,47 @@ HTML = r"""<!doctype html>
       </div>
     </section>
 
+    <section class="band alt" id="progression" aria-labelledby="progression-title">
+      <div class="inner">
+        <div class="section-head">
+          <h2 id="progression-title">ATE and metric progression</h2>
+          <p>Ordered evidence from the original S3E Alpha ORB-SLAM3 baseline to the current three-run controlled-runtime evaluation. Lower ATE and RPE are better.</p>
+        </div>
+        <p class="progression-summary"><strong>The long-window trajectory improved, but the production gate remains closed.</strong> Fast initialization and the selected baseline scale reduced long-window ATE and restored frame continuity. The current median remains 12.9× above target, and CPU/thread pinning widened the run-to-run ATE range instead of making the trajectory reproducible.</p>
+        <article class="progression-card" aria-labelledby="vio-progression-title">
+          <header><h3 id="vio-progression-title">S3E Alpha VIO configuration progression</h3><p>Ordered experimental stages; logarithmic ATE axis. The 500-frame and 1,000-frame cohorts are separated and should not be compared as one continuous time series.</p></header>
+          <div class="progression-chart" id="vio-progression-chart"></div>
+          <p class="progression-reading"><strong>Readout.</strong> The 1.20× balanced profile is the strongest healthy single long-window configuration. High-recall features improve local RPE while degrading global ATE. Three-run intervals then show that neither normal pacing nor the current CPU-controlled runtime is reproducible.</p>
+        </article>
+        <article class="progression-card" aria-labelledby="layer-progression-title">
+          <header><h3 id="layer-progression-title">Current evaluation layers</h3><p>Current three-run medians and ranges on the same logarithmic ATE scale; status labels distinguish live, offline, and delayed-map evidence.</p></header>
+          <div class="progression-chart" id="layer-progression-chart"></div>
+          <p class="progression-reading"><strong>Readout.</strong> Native 1 Hz RTK is live and causal but stops at 0.218 m median ATE. Only adaptive fixed-lag map finalization crosses 0.1 m, and that result is delayed controlled history rather than a live-pose pass.</p>
+        </article>
+        <article class="progression-card" aria-labelledby="progression-table-title">
+          <header><h3 id="progression-table-title">Key changes at each VIO step</h3><p>Exact checked-out metrics, tracking continuity, and the comparison basis used for every annotated change.</p></header>
+          <div class="progression-table-wrap"><table class="progression-table"><thead><tr><th>Stage</th><th>Scope</th><th>ATE</th><th>Sim(3)</th><th>RPE</th><th>Tracking</th><th>Measured change</th><th>Key change</th></tr></thead><tbody id="progression-table-body"></tbody></table></div>
+        </article>
+        <p class="progression-caveat"><strong>Measurement boundary.</strong> ATE is rigidly aligned position RMSE unless explicitly labeled Sim(3). Ranges are minima and maxima from three runs, not confidence intervals. Percentage changes are descriptive artifact comparisons; fitted truth, offline alignment, or delayed history never opens a production global-pose claim.</p>
+      </div>
+    </section>
+
+    <section class="band" id="global-gaussians" aria-labelledby="global-gaussians-title">
+      <div class="inner">
+        <div class="section-head">
+          <h2 id="global-gaussians-title">S3E static asynchronous global Gaussian attempt</h2>
+          <p>Dense model outputs are fused spatially without sorting, resampling, or synchronizing capture time. Registration evidence remains a separate fail-closed gate.</p>
+        </div>
+        <article class="fusion-shell">
+          <div class="fusion-status" id="fusion-status"></div>
+          <div class="fusion-detail">
+            <div><h3>What ran</h3><p id="fusion-summary"></p><div id="fusion-sources"></div></div>
+            <div><h3>Claim boundary and next step</h3><div class="fusion-warning" id="fusion-warning"></div><p id="fusion-next"></p><div class="fusion-links"><a href="s3e-global-gaussian-static/manifest.json" target="_blank">Open manifest ↗</a><a href="s3e-global-gaussian-static/preparation.json" target="_blank">Open pose diagnostics ↗</a><a href="s3e-global-gaussian-static/unified_s3e_global_gaussians.ply" download>Download 44 MB PLY</a><a href="?doc=applications%2Fariadne%2Fdocs%2Fstatic_asynchronous_global_gaussians.md#documentation">Read method and results</a></div></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
     <section class="band alt" aria-labelledby="pipeline-title">
       <div class="inner">
         <div class="section-head">
@@ -1135,7 +2803,27 @@ HTML = r"""<!doctype html>
       </div>
     </section>
 
-    <section class="band" id="gaps">
+    <section class="band" id="documentation" aria-labelledby="documentation-title">
+      <div class="inner">
+        <div class="section-head">
+          <h2 id="documentation-title">Documentation library</h2>
+          <p>Search and read every published project document without leaving the reporting interface. Repository-relative links open the corresponding document here.</p>
+        </div>
+        <div class="docs-shell">
+          <aside class="docs-sidebar" aria-label="Documentation browser">
+            <label class="docs-search-wrap" for="docs-search"><span>Search documentation</span><input class="docs-search" id="docs-search" type="search" placeholder="Title, path, or content" autocomplete="off"></label>
+            <p class="docs-count" id="docs-count"></p>
+            <nav class="docs-nav" id="docs-nav" aria-label="Available documents"></nav>
+          </aside>
+          <article class="docs-reader" aria-live="polite" aria-labelledby="doc-reader-title">
+            <header class="docs-reader-head"><h3 id="doc-reader-title"></h3><div class="docs-reader-meta" id="doc-reader-meta"></div></header>
+            <div class="markdown-body" id="doc-content"></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="band alt" id="gaps">
       <div class="inner gap-layout">
         <div>
           <div class="section-head" style="display:block;margin-bottom:12px"><h2>What remains</h2></div>
@@ -1160,6 +2848,164 @@ HTML = r"""<!doctype html>
     const data = __PAYLOAD__;
     const fmt = (value, digits = 3) => Number(value).toLocaleString(undefined, { maximumFractionDigits: digits });
     const badge = state => `<span class="badge ${state}">${state}</span>`;
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+    const documentsByPath = new Map(data.documentation.map(document => [document.path, document]));
+    let selectedDocumentPath = '';
+    let documentationQuery = '';
+
+    const normalizeDocumentPath = (currentPath, target) => {
+      const pathOnly = target.split('#', 1)[0].split('?', 1)[0];
+      let decoded;
+      try { decoded = decodeURIComponent(pathOnly); } catch { decoded = pathOnly; }
+      const segments = decoded.startsWith('/') ? [] : currentPath.split('/').slice(0, -1);
+      decoded.replace(/^\.\//, '').split('/').forEach(segment => {
+        if (!segment || segment === '.') return;
+        if (segment === '..') segments.pop();
+        else segments.push(segment);
+      });
+      return segments.join('/');
+    };
+
+    const renderInlineMarkdown = (source, currentPath) => {
+      const renderPlain = value => escapeHtml(value)
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+      const pattern = /(`[^`\n]+`|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\))/g;
+      let result = '';
+      let cursor = 0;
+      for (const match of source.matchAll(pattern)) {
+        result += renderPlain(source.slice(cursor, match.index));
+        if (match[0].startsWith('`')) {
+          result += `<code>${escapeHtml(match[0].slice(1, -1))}</code>`;
+        } else {
+          const label = escapeHtml(match[2]);
+          const target = match[3];
+          const normalized = normalizeDocumentPath(currentPath, target);
+          if (documentsByPath.has(normalized)) {
+            result += `<a href="?doc=${encodeURIComponent(normalized)}#documentation" data-doc-path="${escapeHtml(normalized)}">${label}</a>`;
+          } else if (/^(https?:|mailto:)/i.test(target)) {
+            result += `<a href="${escapeHtml(target)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+          } else {
+            result += `<span title="Unavailable from the published documentation set: ${escapeHtml(target)}">${label}</span>`;
+          }
+        }
+        cursor = match.index + match[0].length;
+      }
+      return result + renderPlain(source.slice(cursor));
+    };
+
+    const tableCells = line => line.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+    const tableDivider = line => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+    const markdownBlockStart = (lines, index) => {
+      const line = lines[index] || '';
+      return /^\s*$/.test(line) || /^```/.test(line) || /^#{1,6}\s+/.test(line) || /^\s*([-*+]\s+|\d+\.\s+|>\s?)/.test(line) || /^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line) || (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1]));
+    };
+
+    const renderMarkdown = document => {
+      const lines = document.markdown.replace(/\r\n?/g, '\n').split('\n');
+      const output = [];
+      for (let index = 0; index < lines.length;) {
+        const line = lines[index];
+        if (!line.trim()) { index += 1; continue; }
+        const fence = line.match(/^```\s*([^\s`]*)/);
+        if (fence) {
+          const code = [];
+          index += 1;
+          while (index < lines.length && !/^```/.test(lines[index])) code.push(lines[index++]);
+          if (index < lines.length) index += 1;
+          const language = fence[1] ? ` data-language="${escapeHtml(fence[1])}"` : '';
+          output.push(`<pre><code${language}>${escapeHtml(code.join('\n'))}</code></pre>`);
+          continue;
+        }
+        const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+        if (heading) {
+          const level = heading[1].length;
+          output.push(`<h${level}>${renderInlineMarkdown(heading[2], document.path)}</h${level}>`);
+          index += 1;
+          continue;
+        }
+        if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+          output.push('<hr>'); index += 1; continue;
+        }
+        if (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1])) {
+          const headers = tableCells(line);
+          index += 2;
+          const rows = [];
+          while (index < lines.length && lines[index].includes('|') && lines[index].trim()) rows.push(tableCells(lines[index++]));
+          output.push(`<table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell, document.path)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${headers.map((_, cellIndex) => `<td>${renderInlineMarkdown(row[cellIndex] || '', document.path)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+          continue;
+        }
+        if (/^\s*>\s?/.test(line)) {
+          const quote = [];
+          while (index < lines.length && /^\s*>\s?/.test(lines[index])) quote.push(lines[index++].replace(/^\s*>\s?/, ''));
+          output.push(`<blockquote><p>${quote.map(item => renderInlineMarkdown(item, document.path)).join('<br>')}</p></blockquote>`);
+          continue;
+        }
+        const list = line.match(/^\s*([-*+]|\d+\.)\s+(.+)$/);
+        if (list) {
+          const ordered = /\d+\./.test(list[1]);
+          const items = [];
+          while (index < lines.length) {
+            const item = lines[index].match(/^\s*([-*+]|\d+\.)\s+(.+)$/);
+            if (!item || /\d+\./.test(item[1]) !== ordered) break;
+            const task = item[2].match(/^\[([ xX])\]\s+(.+)$/);
+            items.push(task ? `<li><input type="checkbox" disabled ${task[1].toLowerCase() === 'x' ? 'checked' : ''}> ${renderInlineMarkdown(task[2], document.path)}</li>` : `<li>${renderInlineMarkdown(item[2], document.path)}</li>`);
+            index += 1;
+          }
+          const tag = ordered ? 'ol' : 'ul';
+          output.push(`<${tag}>${items.join('')}</${tag}>`);
+          continue;
+        }
+        const paragraph = [line.trim()];
+        index += 1;
+        while (index < lines.length && !markdownBlockStart(lines, index)) paragraph.push(lines[index++].trim());
+        output.push(`<p>${renderInlineMarkdown(paragraph.join(' '), document.path)}</p>`);
+      }
+      return output.join('');
+    };
+
+    const filteredDocuments = () => {
+      const query = documentationQuery.trim().toLowerCase();
+      if (!query) return data.documentation;
+      return data.documentation.filter(document => `${document.title}\n${document.path}\n${document.markdown}`.toLowerCase().includes(query));
+    };
+
+    const renderDocumentationNavigation = () => {
+      const documents = filteredDocuments();
+      document.getElementById('docs-count').textContent = `${documents.length} of ${data.documentation.length} documents`;
+      const groups = new Map();
+      documents.forEach(document => {
+        if (!groups.has(document.group)) groups.set(document.group, []);
+        groups.get(document.group).push(document);
+      });
+      const navigation = document.getElementById('docs-nav');
+      navigation.innerHTML = documents.length ? Array.from(groups, ([group, items]) => `<section class="docs-group"><h3>${escapeHtml(group)}</h3>${items.map(document => `<button class="doc-link ${document.path === selectedDocumentPath ? 'active' : ''}" type="button" data-doc-path="${escapeHtml(document.path)}" ${document.path === selectedDocumentPath ? 'aria-current="page"' : ''}><strong>${escapeHtml(document.title)}</strong><span>${escapeHtml(document.path)}</span></button>`).join('')}</section>`).join('') : '<p class="docs-empty">No documents match this search.</p>';
+      navigation.querySelectorAll('[data-doc-path]').forEach(button => button.addEventListener('click', () => selectDocument(button.dataset.docPath, true)));
+    };
+
+    const selectDocument = (path, updateLocation = false) => {
+      const selected = documentsByPath.get(path) || data.documentation[0];
+      if (!selected) return;
+      selectedDocumentPath = selected.path;
+      document.getElementById('doc-reader-title').textContent = selected.title;
+      document.getElementById('doc-reader-meta').innerHTML = `<span>${escapeHtml(selected.path)}</span><span>${selected.word_count.toLocaleString()} words</span><span>${escapeHtml(selected.group)}</span>`;
+      const content = document.getElementById('doc-content');
+      content.innerHTML = renderMarkdown(selected);
+      content.querySelectorAll('[data-doc-path]').forEach(link => link.addEventListener('click', event => {
+        event.preventDefault();
+        selectDocument(link.dataset.docPath, true);
+        document.getElementById('documentation').scrollIntoView();
+      }));
+      renderDocumentationNavigation();
+      if (updateLocation) history.replaceState(null, '', `${location.pathname}?doc=${encodeURIComponent(selected.path)}#documentation`);
+    };
+
+    document.getElementById('docs-search').addEventListener('input', event => {
+      documentationQuery = event.target.value;
+      renderDocumentationNavigation();
+    });
+    const requestedDocument = new URLSearchParams(location.search).get('doc');
+    selectDocument(documentsByPath.has(requestedDocument) ? requestedDocument : (documentsByPath.has('applications/ariadne/README.md') ? 'applications/ariadne/README.md' : data.documentation[0]?.path));
     document.getElementById('hero-image').src = data.hero_image;
     document.getElementById('generated').textContent = `Generated ${data.generated}`;
 
@@ -1196,6 +3042,55 @@ HTML = r"""<!doctype html>
       const explanation = `<div class="result-explanation"><p><strong>Environment:</strong> ${result.movement.environment}. The source is TUM VI <em>corridor1</em>, repackaged as an aligned D2SLAM replay. <a href="${result.movement.ground_truth_source}" target="_blank" rel="noreferrer">Dataset context ↗</a></p><p><strong>Evidence used:</strong> The evaluator context contained ${fmt(result.frames, 0)} camera frames and ${fmt(result.imu_samples, 0)} IMU samples. ${result.name} emitted ${fmt(result.metrics.trajectory_pose_count, 0)} poses over a ${fmt(result.movement.trajectory_span_s, 1)} s trajectory span; ${fmt(result.metrics.matched_pose_count, 0)} (${fmt(matchRate, 1)}%) matched the available ground truth within 0.6 s. Those matches span ${fmt(pathDistance, 2)} m of measured motion over ${fmt(pathDuration, 1)} s.</p><p><strong>ATE context:</strong> ${fmt(result.metrics.ate_rmse_m * 100, 2)} cm RMS global position error across that ${fmt(pathDistance, 2)} m ground-truth-covered path. Dividing ATE by path length gives ${fmt(atePathPercent, 2)}% as a scale reference; that ratio is not the standard ATE definition.</p><p><strong>RPE context:</strong> ${fmt(result.metrics.rpe_rmse_m * 100, 2)} cm RMS local displacement error between consecutive matched poses. The corresponding ground-truth motion was ${fmt(result.movement.ground_truth_step_rms_m * 100, 2)} cm RMS per step, so the RPE is ${fmt(rpeStepPercent, 1)}% of a typical evaluated step.</p><p><strong>Final-drift context:</strong> The final matched pose is ${fmt(result.metrics.final_drift_m * 100, 2)} cm from ground truth after ${fmt(pathDistance, 2)} m and ${fmt(pathDuration, 1)} s of covered motion. That is ${fmt(finalPathPercent, 2)}% of the covered path length and ${fmt(endpointRatio, 1)}× the ATE. ${endpointReading}</p><p><strong>Coverage limit:</strong> ${scopeReading}</p></div>`;
       return `<article class="result-card"><div class="result-top"><div><h3>${result.name}</h3><p class="scope">${result.scope}</p></div><a class="run-link" href="${result.wandb}" target="_blank" rel="noreferrer">W&B run ↗</a></div>${rows}<div class="result-foot"><span>${fmt(result.frames, 0)} input frames</span><span>${fmt(result.metrics.trajectory_pose_count, 0)} trajectory poses</span><span>${fmt(result.metrics.matched_pose_count, 0)} matched</span><span>${fmt(result.metrics.elapsed_seconds, 1)} s elapsed</span></div>${explanation}</article>`;
     }).join('');
+
+    const progression = data.evaluation_progression;
+    const progressionColors = { baseline: '#66716b', diagnostic: '#a46516', retained: '#2f628b', rejected: '#a33f48', current: '#2f628b', controlled: '#1f7451' };
+    const progressionMarker = (status, x, y, color) => {
+      if (status === 'diagnostic') return `<path d="M${x} ${y-7}L${x+7} ${y}L${x} ${y+7}L${x-7} ${y}Z" fill="#fff" stroke="${color}" stroke-width="3"/>`;
+      if (status === 'rejected') return `<path d="M${x-6} ${y-6}L${x+6} ${y+6}M${x+6} ${y-6}L${x-6} ${y+6}" stroke="${color}" stroke-width="3"/>`;
+      if (status === 'retained') return `<rect x="${x-6}" y="${y-6}" width="12" height="12" fill="${color}" stroke="#fff" stroke-width="2"/>`;
+      if (status === 'current' || status === 'controlled') return `<circle cx="${x}" cy="${y}" r="7" fill="#fff" stroke="${color}" stroke-width="4"/>`;
+      return `<circle cx="${x}" cy="${y}" r="6" fill="${color}" stroke="#fff" stroke-width="2"/>`;
+    };
+    const renderProgressionChart = (items, chartLabel) => {
+      const width = 1100, left = 350, right = 1035, top = 72, rowGap = 58;
+      const height = top + items.length * rowGap + 48;
+      const domainMin = Math.log10(.08), domainMax = Math.log10(6);
+      const x = value => left + (Math.log10(value) - domainMin) / (domainMax - domainMin) * (right - left);
+      const ticks = [.1, .2, .5, 1, 2, 5];
+      const guides = ticks.map(value => `<g><line x1="${x(value)}" y1="46" x2="${x(value)}" y2="${height-35}" stroke="${value === progression.target_ate_m ? '#1f7451' : '#d7ddd9'}" stroke-width="${value === progression.target_ate_m ? 2 : 1}" ${value === progression.target_ate_m ? '' : 'stroke-dasharray="3 5"'}/><text x="${x(value)}" y="29" text-anchor="middle" class="chart-label">${value} m</text></g>`).join('');
+      const rows = items.map((item, index) => {
+        const y = top + index * rowGap;
+        const color = progressionColors[item.status] || progressionColors.baseline;
+        const low = item.ate_min_m ?? item.ate_m;
+        const high = item.ate_max_m ?? item.ate_m;
+        const interval = high > low ? `<line x1="${x(low)}" y1="${y}" x2="${x(high)}" y2="${y}" stroke="${color}" stroke-opacity=".28" stroke-width="10"/><path d="M${x(low)} ${y-7}V${y+7}M${x(high)} ${y-7}V${y+7}" stroke="${color}" stroke-width="2"/>` : '';
+        const valueLabel = high > low ? `${fmt(item.ate_m, 3)} m median · ${fmt(low, 3)}–${fmt(high, 3)}` : `${fmt(item.ate_m, 3)} m`;
+        return `<g><line x1="18" y1="${y+29}" x2="${right}" y2="${y+29}" stroke="#edf0ee"/><text x="18" y="${y-5}" class="chart-value">${escapeHtml(item.label)}</text><text x="18" y="${y+12}" class="chart-label">${escapeHtml(item.scope || item.detail)}</text><text x="330" y="${y+4}" text-anchor="end" fill="${color}" style="font:700 9px Inter,sans-serif;text-transform:uppercase">${escapeHtml(item.status)}</text>${interval}${progressionMarker(item.status, x(item.ate_m), y, color)}<text x="${Math.min(x(item.ate_m)+12, right-120)}" y="${y-10}" class="chart-value">${valueLabel}</text></g>`;
+      }).join('');
+      return `<div role="img" aria-label="${escapeHtml(chartLabel)}"><svg viewBox="0 0 ${width} ${height}" aria-hidden="true"><text x="${left}" y="14" class="chart-label">ATE RMSE · LOGARITHMIC SCALE · LOWER IS BETTER</text>${guides}<text x="${x(progression.target_ate_m)+6}" y="44" fill="#1f7451" style="font:700 9px Inter,sans-serif">0.1 m TARGET</text>${rows}</svg></div>`;
+    };
+    document.getElementById('vio-progression-chart').innerHTML = renderProgressionChart(progression.stages, 'Ordered S3E Alpha VIO ATE progression from original baseline to current controlled-runtime repeats');
+    document.getElementById('layer-progression-chart').innerHTML = renderProgressionChart(progression.current_layers, 'Current raw, aligned, live-corrected, and delayed-map Alpha ATE evaluation layers');
+    const formatProgressionRange = stage => stage.ate_min_m == null ? `${fmt(stage.ate_m, 3)} m` : `${fmt(stage.ate_min_m, 3)}–${fmt(stage.ate_max_m, 3)} m (med ${fmt(stage.ate_m, 3)})`;
+    document.getElementById('progression-table-body').innerHTML = progression.stages.map(stage => {
+      const deltaClass = stage.status === 'retained' ? 'metric-improved' : stage.status === 'rejected' ? 'metric-regressed' : '';
+      return `<tr><td><strong>${escapeHtml(stage.label)}</strong></td><td>${escapeHtml(stage.scope)}</td><td>${formatProgressionRange(stage)}</td><td>${fmt(stage.sim3_ate_m, 3)} m</td><td>${fmt(stage.rpe_m, 4)} m</td><td>${fmt(stage.poses, 0)} poses<br>${fmt(stage.lost, 0)} lost · ${fmt(stage.resets, 0)} resets</td><td class="${deltaClass}">${escapeHtml(stage.delta)}</td><td>${escapeHtml(stage.change)}</td></tr>`;
+    }).join('');
+
+    const fusion = data.static_global_gaussians;
+    const fusionMetrics = [
+      [fusion.input_gaussians.toLocaleString(), 'Input Gaussians'],
+      [fusion.output_gaussians.toLocaleString(), 'Finite unified Gaussians'],
+      [fusion.filtered_gaussians.toLocaleString(), 'Corrupt primitives filtered'],
+      [fusion.global_registration_verified ? 'Verified' : 'Unverified', 'Global registration'],
+    ];
+    document.getElementById('fusion-status').innerHTML = fusionMetrics.map(([value, label]) => `<div class="fusion-metric"><strong>${value}</strong><span>${label}</span></div>`).join('');
+    document.getElementById('fusion-summary').textContent = `Three real 62-property ReSplat PLYs were generated from independently timed S3E Alpha, Bob, and Carol windows, then transformed and concatenated in ${fusion.mode} mode. Temporal alignment is ${fusion.temporal_alignment}; input timestamps are deliberately out of order and temporal overlap is not required. The output bounds are ${fusion.bounds_m.minimum.map(value => fmt(value, 1)).join(', ')} m to ${fusion.bounds_m.maximum.map(value => fmt(value, 1)).join(', ')} m.`;
+    const fusionPreparation = new Map(fusion.preparation.windows.map(window => [window.agent_id, window]));
+    document.getElementById('fusion-sources').innerHTML = fusion.sources.map(source => { const prepared = fusionPreparation.get(source.agent_id); return `<code>${escapeHtml(source.agent_id)} · ${source.input_gaussians.toLocaleString()} Gaussians · ${prepared.pose_matched_frames} pose-matched frames · ${fmt(prepared.vio_to_truth_alignment_rmse_m, 2)} m offline alignment RMSE · ${fmt(prepared.vio_to_truth_scale, 3)}× scale · capture ${source.capture_timestamp_ns}</code>`; }).join('');
+    document.getElementById('fusion-warning').textContent = fusion.warnings.join(' ');
+    document.getElementById('fusion-next').textContent = 'Next: replace offline truth-fitted transforms with claim-eligible finalized ARIADNE poses, recover Bob/Carol tracking, rotate directional spherical harmonics into the global basis, then evaluate overlap and duplicate geometry. Cross-Wingman clocks remain unsynchronized.';
 
     const stages = [
       ['01', 'Replay', 'ZIP / ROS1 / ROS2', 'validated'],
@@ -1508,7 +3403,104 @@ HTML = r"""<!doctype html>
       const edges = line('wingman_01_t0','wingman_01_t1') + line('wingman_01_t1','object_tower') + line('wingman_01_t0','object_tower','#1f7451','4 3') + line('wingman_02_t0','wingman_02_t1') + line('wingman_01_t0','object_tower','#a33f48','8 6');
       const nodes = visual.nodes.map(node => { const [x,y]=coordinates[node.id]; return `<g><circle cx="${x}" cy="${y}" r="9" fill="${node.component === 0 ? '#1f7451' : '#2f628b'}"/><text x="${x+12}" y="${y+4}" class="chart-label">${node.id.replace('wingman_','W').replace('object_','O_')}</text><circle cx="${x}" cy="${y}" r="${10+node.covariance_trace*70}" fill="none" stroke="${node.component === 0 ? '#1f7451' : '#2f628b'}" opacity=".3"/></g>`; }).join('');
       const svg = svgFrame('Full SE3 pose graph showing two disconnected components, propagated uncertainty, and a rejected loop', `<rect x="20" y="16" width="334" height="120" rx="4" fill="#f7f9f7"/><rect x="372" y="16" width="168" height="120" rx="4" fill="#f5f8fa"/>${edges}${nodes}<text x="384" y="31" class="chart-label">component 2</text><text x="228" y="130" fill="#a33f48" style="font:700 9px Inter,sans-serif">- - rejected SE(3) loop</text>`);
-      return visualShell('SE(3) graph + covariance', svg, `<span><strong>${new Set(visual.nodes.map(node => node.component)).size}</strong> components</span><span><strong>${visual.rejected.length}</strong> rejected</span><span>revision <strong>${visual.revision}</strong></span><span>restart revision <strong>${visual.state_restored && visual.restored_revision === visual.revision ? 'stable' : 'missing'}</strong></span><span>translation RMSE <strong>${fmt(visual.translation_rmse_m,4)} m</strong></span><span>rotation RMSE <strong>${fmt(visual.rotation_rmse_rad,4)} rad</strong></span>`);
+      const badges = [
+        `<span><strong>${new Set(visual.nodes.map(node => node.component)).size}</strong> components</span>`,
+        `<span><strong>${visual.rejected.length}</strong> rejected constraints</span>`,
+        `<span>restart revision <strong>${visual.state_restored && visual.restored_revision === visual.revision ? 'stable' : 'missing'}</strong></span>`,
+        `<span>MILUV real 6-DoF ATE <strong>${fmt(visual.miluv_baseline_ate_m,3)} → ${fmt(visual.miluv_optimized_ate_m,4)} m</strong> / ${fmt(visual.miluv_target_ate_m,2)} m target</span>`,
+        `<span>MILUV real orientation RMSE <strong>${fmt(visual.miluv_optimized_orientation_rmse_rad,4)} rad</strong></span>`,
+        `<span>MILUV fixed cadence <strong>${fmt(visual.miluv_correction_interval_s,2)} s / ${fmt(visual.miluv_messages_per_minute_max,2)} msg min⁻¹ max</strong></span>`,
+        `<span>MILUV corrections per UAV <strong>${Object.entries(visual.miluv_corrections_by_agent).map(([agent,count]) => `${agent}: ${count}`).join(' · ')}</strong></span>`,
+        `<span>MILUV cross-agent-only ATE <strong>${fmt(visual.miluv_cross_agent_only_ate_m,3)} m</strong> · global anchors required</span>`,
+        `<span>MILUV UWB RMSE / p95 <strong>${fmt(visual.miluv_uwb_rmse_m,3)} / ${fmt(visual.miluv_uwb_p95_m,3)} m</strong></span>`,
+        `<span>MILUV causal UWB graph <strong>${fmt(visual.miluv_uwb_causal_ate_m,3)} m / ${fmt(visual.miluv_uwb_causal_messages_per_minute_max,1)} msg min⁻¹ max</strong> · target missed</span>`,
+        `<span>MILUV causal fixed lag <strong>${fmt(visual.miluv_uwb_fixed_lag_position_ate_m,4)} m fleet / ${fmt(visual.miluv_uwb_fixed_lag_max_agent_ate_m,4)} m max Wingman</strong> · ${visual.miluv_uwb_fixed_lag_all_agents_target_met ? 'controlled pass' : 'per-node miss'} · claim ${visual.miluv_uwb_fixed_lag_position_claim_eligible ? 'eligible' : 'closed'}</span>`,
+        `<span>MILUV fixed-lag timing <strong>${fmt(visual.miluv_uwb_fixed_lag_duration_s,2)} s window / ${fmt(visual.miluv_uwb_fixed_lag_solve_interval_s,2)} s updates / ${fmt(visual.miluv_uwb_fixed_lag_solve_p95_ms,1)} ms p95</strong></span>`,
+        `<span>MILUV fixed-lag correction load <strong>${fmt(visual.miluv_uwb_fixed_lag_messages_per_minute_max,1)} msg min⁻¹ max</strong> · orientation ${fmt(visual.miluv_uwb_fixed_lag_orientation_rmse_rad,4)} rad remains controlled</span>`,
+        `<span>MILUV non-causal UWB batch <strong>${fmt(visual.miluv_uwb_batch_position_ate_m,4)} m position / ${fmt(visual.miluv_uwb_batch_orientation_rmse_rad,4)} rad orientation</strong> · position ${visual.miluv_uwb_batch_position_target_met ? 'passes' : 'fails'}, full pose ${visual.miluv_uwb_batch_full_pose_target_met ? 'passes' : 'fails'}</span>`,
+        `<span>MILUV post-batch lower-bound load <strong>${fmt(visual.miluv_uwb_batch_messages_per_minute_max,1)} msg min⁻¹ max</strong></span>`,
+        `<span>MILUV adaptive / fixed load <strong>${visual.miluv_adaptive_correction_count} / ${visual.miluv_fixed_correction_count} corrections</strong> · fixed retained</span>`,
+        `<span>MILUV archive read <strong>${fmt(visual.miluv_loaded_archive_fraction_percent,3)}%</strong></span>`,
+        `<span>S3E proxy ATE <strong>${fmt(visual.s3e_optimized_ate_m,3)} m</strong> / ${fmt(visual.s3e_target_ate_m,2)} m target</span>`,
+        `<span>S3E controlled per-Wingman ATE <strong>${Object.entries(visual.s3e_per_agent_ate_m).map(([agent,ate]) => `${agent}: ${fmt(ate,3)} m`).join(' · ')}</strong> · worst ${fmt(visual.s3e_maximum_agent_ate_m,3)} m</span>`,
+        `<span>S3E adaptive / fixed load <strong>${visual.s3e_selected_correction_count} / ${visual.s3e_fixed_correction_count} corrections</strong> · ${fmt(visual.s3e_correction_load_reduction_percent,1)}% reduction</span>`,
+        `<span>S3E scheduler demand envelope <strong>${fmt(visual.s3e_scheduler_demand_error_m,2)} m</strong> · ${visual.s3e_capacity_override_cycles} capacity-override cycles</span>`,
+        `<span>S3E controlled cross-Wingman relative RMSE <strong>${fmt(visual.s3e_cross_agent_baseline_relative_rmse_m,3)} → ${fmt(visual.s3e_cross_agent_dense_relative_rmse_m,3)} m</strong> · ${fmt(visual.s3e_cross_agent_dense_relative_improvement_percent,1)}% improvement</span>`,
+        `<span>cross-Wingman-only absolute ATE <strong>${fmt(visual.s3e_cross_agent_only_global_ate_m,3)} m</strong> @ ${fmt(visual.s3e_cross_agent_factor_rate_per_minute,2)} factors/min · global anchor still required</span>`,
+        `<span>cross-Wingman RMSE @ 0.05 / 0.20 m association noise <strong>${fmt(visual.s3e_cross_agent_relative_rmse_at_0_05m_noise,3)} / ${fmt(visual.s3e_cross_agent_relative_rmse_at_0_2m_noise,3)} m</strong></span>`,
+        `<span>S3E controlled evidence payload <strong>${fmt(visual.s3e_report_payload_bytes/1024,1)} KiB</strong> · aggregate metrics + bounded sweeps</span>`,
+        `<span>S3E deployment claim <strong>${visual.s3e_full_pose_claim_eligible ? 'eligible' : 'closed'}</strong> · ground-truth-derived position / controlled orientation</span>`,
+        `<span>S3E controlled orientation <strong>${fmt(visual.s3e_baseline_orientation_rmse_rad,3)} → ${fmt(visual.s3e_optimized_orientation_rmse_rad,4)} rad</strong></span>`,
+        `<span>passing correction noise <strong>${fmt(visual.s3e_maximum_translation_noise_m,3)} m / ${fmt(visual.s3e_maximum_rotation_noise_rad,3)} rad</strong></span>`,
+        `<span>S3E rotation factors / iterations <strong>${visual.s3e_rotation_rationalization_constraints} / ${visual.s3e_rotation_rationalization_iterations}</strong></span>`,
+        `<span>S3E constraint rotation RMSE <strong>${fmt(visual.s3e_constraint_rotation_rmse_rad,4)} rad</strong></span>`,
+        `<span>real S3E VIO <strong>${visual.s3e_real_vio_target_met}/${visual.s3e_real_vio_agent_count}</strong> target passes</span>`,
+        `<span>S3E sensor preflight <strong>${visual.s3e_sensor_contract_passes}/${visual.s3e_real_vio_agent_count}</strong> Wingmen pass</span>`,
+        `<span>Carol auto geometry <strong>${fmt(visual.s3e_carol_replicate_ate_median,2)} m median ATE</strong> · ${fmt(visual.s3e_carol_replicate_ate_min,2)}–${fmt(visual.s3e_carol_replicate_ate_max,2)} m · ${visual.s3e_carol_reproducible ? 'reproducible' : 'unstable'}</span>`,
+        `<span>Alpha three-run ATE <strong>${fmt(visual.s3e_alpha_replicate_ate_median,2)} m median</strong> · ${fmt(visual.s3e_alpha_replicate_ate_min,2)}–${fmt(visual.s3e_alpha_replicate_ate_max,2)} m · ${visual.s3e_alpha_reproducible ? 'reproducible' : 'unstable'}</span>`,
+        `<span>Alpha single-CPU ATE / Sim(3) <strong>${fmt(visual.s3e_alpha_deterministic_ate_min,3)}–${fmt(visual.s3e_alpha_deterministic_ate_max,3)} / ${fmt(visual.s3e_alpha_deterministic_sim3_min,3)}–${fmt(visual.s3e_alpha_deterministic_sim3_max,3)} m</strong> · ${visual.s3e_alpha_deterministic_reproducible ? 'reproducible' : 'still unstable'}</span>`,
+        `<span>Alpha mapping-sync ATE / Sim(3) <strong>${fmt(visual.s3e_alpha_mapping_sync_ate_min,3)}–${fmt(visual.s3e_alpha_mapping_sync_ate_max,3)} / ${fmt(visual.s3e_alpha_mapping_sync_sim3_min,3)}–${fmt(visual.s3e_alpha_mapping_sync_sim3_max,3)} m</strong> · ${visual.s3e_alpha_mapping_sync_reproducible ? 'reproducible' : 'still unstable'}</span>`,
+        `<span>best Alpha ATE / Sim(3) floor <strong>${fmt(visual.s3e_alpha_best_ate_m,2)} / ${fmt(visual.s3e_alpha_best_sim3_ate_m,2)} m</strong></span>`,
+        `<span>matched Alpha OpenVINS ATE / Sim(3) <strong>${fmt(visual.s3e_openvins_ate_m,1)} / ${fmt(visual.s3e_openvins_sim3_ate_m,2)} m</strong> (${visual.s3e_openvins_tracking_healthy ? 'correction eligible' : 'relocalize'})</span>`,
+        `<span>OpenVINS fitted scale / correction load <strong>${fmt(visual.s3e_openvins_scale_correction,4)}× / ${fmt(visual.s3e_openvins_event_messages_per_minute,1)} min⁻¹</strong> · peak ${visual.s3e_openvins_event_peak_per_second} s⁻¹</span>`,
+        `<span>S3E RTK orientation reference <strong>${visual.s3e_alpha_orientation_reference_available ? 'available' : 'unavailable'}</strong></span>`,
+        `<span>Alpha shared-IMU orientation proxy / RPE <strong>${fmt(visual.s3e_alpha_orientation_proxy_rmse_rad,3)} / ${fmt(visual.s3e_alpha_orientation_proxy_rpe_rmse_rad,4)} rad</strong> (${visual.s3e_alpha_orientation_proxy_independent ? 'independent' : 'non-independent'})</span>`,
+        `<span>Alpha stereo-only AHRS proxy <strong>${fmt(visual.s3e_alpha_stereo_orientation_proxy_rmse_rad,3)} rad</strong> (${visual.s3e_alpha_stereo_orientation_proxy_independent ? 'independent' : 'non-independent'})</span>`,
+        `<span>bounded RTK lever-arm sensitivity <strong>${fmt(visual.s3e_alpha_lever_arm_fitted_norm_m,2)} / ${fmt(visual.s3e_alpha_lever_arm_maximum_norm_m,2)} m</strong> (${visual.s3e_alpha_lever_arm_bound_active ? 'bound saturated' : 'inside bound'})</span>`,
+        `<span>lever-arm optimistic ATE / full-fit gain <strong>${fmt(visual.s3e_alpha_lever_arm_adjusted_ate_m,2)} m / ${fmt(visual.s3e_alpha_lever_arm_full_improvement_percent,1)}%</strong></span>`,
+        `<span>lever-arm held-out gain <strong>${fmt(visual.s3e_alpha_lever_arm_holdout_improvement_percent,1)}%</strong> · unconstrained norm ${fmt(visual.s3e_alpha_lever_arm_unconstrained_norm_m,2)} m</span>`,
+        `<span>Alpha offline local SE(3) <strong>${fmt(visual.s3e_alpha_local_rigid_1s_ate_m,3)} m @ ${fmt(visual.s3e_alpha_local_rigid_interval_s,1)} s</strong> · ${fmt(visual.s3e_alpha_local_rigid_messages_per_minute,0)} anchors/min</span>`,
+        `<span>Alpha offline local Sim(3) <strong>${fmt(visual.s3e_alpha_local_sim3_2s_ate_m,3)} m @ ${fmt(visual.s3e_alpha_local_sim3_interval_s,1)} s</strong> · ${fmt(visual.s3e_alpha_local_sim3_messages_per_minute,0)} anchors/min</span>`,
+        `<span>Alpha 5 s local scale p05–p95 <strong>${fmt(visual.s3e_alpha_local_5s_scale_p05,3)}–${fmt(visual.s3e_alpha_local_5s_scale_p95,3)}×</strong></span>`,
+        `<span>0.5 s Sim(3) Alpha stereo / Bob / Carol <strong>${fmt(visual.s3e_alpha_stereo_local_sim3_0_5s_ate_m,3)} / ${fmt(visual.s3e_bob_local_sim3_0_5s_ate_m,3)} / ${fmt(visual.s3e_carol_local_sim3_0_5s_ate_m,3)} m</strong></span>`,
+        `<span>local-fit actions <strong>${visual.s3e_local_alignment_profiles.map(profile => `${profile.agent_id}: ${profile.action.replaceAll('_',' ')}`).join(' · ')}</strong></span>`,
+        `<span>local fits <strong>offline and non-causal</strong> · scored ATE unchanged</span>`,
+        `<span>Alpha causal trailing SE(3) <strong>${fmt(visual.s3e_alpha_causal_se3_ate_m,3)} m @ ${fmt(visual.s3e_alpha_causal_se3_cadence_s,1)} s</strong> · ${fmt(visual.s3e_alpha_causal_se3_messages_per_minute,1)} anchors/min</span>`,
+        `<span>Alpha causal trailing Sim(3) <strong>${fmt(visual.s3e_alpha_causal_sim3_ate_m,3)} m @ ${fmt(visual.s3e_alpha_causal_sim3_cadence_s,1)} s</strong> · ${fmt(visual.s3e_alpha_causal_sim3_messages_per_minute,1)} anchors/min</span>`,
+        `<span>causal p95 jumps SE(3) / Sim(3) <strong>${fmt(visual.s3e_alpha_causal_se3_jump_p95_m,3)} / ${fmt(visual.s3e_alpha_causal_sim3_jump_p95_m,3)} m</strong></span>`,
+        `<span>causal Sim(3) p95 scale update <strong>${fmt(visual.s3e_alpha_causal_sim3_scale_update_p95_percent,1)}%</strong> · ideal RTK anchors, zero latency</span>`,
+        `<span>Alpha phase ATE first / middle / last <strong>${fmt(visual.s3e_alpha_first_quarter_ate_m,2)} / ${fmt(visual.s3e_alpha_middle_half_ate_m,2)} / ${fmt(visual.s3e_alpha_last_quarter_ate_m,2)} m</strong></span>`,
+        `<span>Alpha peak-error trajectory point <strong>${fmt(visual.s3e_alpha_peak_error_fraction*100,1)}%</strong></span>`,
+        `<span>timing best shift / ATE gain <strong>${visual.s3e_alpha_timing_best_offset_ms} ms / ${fmt(visual.s3e_alpha_timing_gain_percent,2)}%</strong> (${visual.s3e_alpha_timing_dominant ? 'dominant' : 'not dominant'})</span>`,
+        `<span>high-recall ORB ATE <strong>${fmt(visual.s3e_alpha_high_recall_ate_m,2)} m</strong> (rejected)</span>`,
+        `<span>later-window baseline / 1.20× ATE <strong>${fmt(visual.s3e_alpha_late_default_ate_m,2)} / ${fmt(visual.s3e_alpha_late_scaled_ate_m,2)} m</strong></span>`,
+        `<span>later-window residual scale <strong>${fmt(visual.s3e_alpha_late_scaled_residual_scale,3)}×</strong></span>`,
+        `<span>Alpha replicated causal Sim(3) <strong>${fmt(visual.s3e_alpha_replicate_causal_ate_max,4)} m worst / ${fmt(visual.s3e_alpha_replicate_load_min,1)}–${fmt(visual.s3e_alpha_replicate_load_max,1)} corrections/min</strong></span>`,
+        `<span>Alpha ideal-interpolated ingress / hold threshold <strong>${fmt(visual.s3e_alpha_replicate_anchor_load_max,1)} anchors/min / ${fmt(visual.s3e_alpha_replicate_threshold_min,2)}–${fmt(visual.s3e_alpha_replicate_threshold_max,2)} m</strong></span>`,
+        `<span>causal hold p95 / max <strong>${fmt(visual.s3e_alpha_replicate_hold_p95_max_s,2)} / ${fmt(visual.s3e_alpha_replicate_hold_max_s,2)} s</strong> · reaction ${fmt(visual.s3e_alpha_replicate_min_interval_s,3)} s · peak ${visual.s3e_alpha_replicate_peak_per_second} s⁻¹</span>`,
+        `<span>Alpha radio-min comparison <strong>${fmt(visual.s3e_alpha_radio_min_ate_max,4)} m / ${fmt(visual.s3e_alpha_radio_min_correction_load_max,1)} corrections/min</strong> · ${fmt(visual.s3e_alpha_radio_min_anchor_load_max,1)} anchors/min</span>`,
+        `<span>Alpha native 1 Hz RTK Sim(3) <strong>${fmt(visual.s3e_alpha_native_rtk_sim3_ate_min,3)}–${fmt(visual.s3e_alpha_native_rtk_sim3_ate_max,3)} m</strong> · ${visual.s3e_alpha_native_rtk_target_pass_count}/3 target passes</span>`,
+        `<span>Alpha native RTK ingress / corrections <strong>${fmt(visual.s3e_alpha_native_rtk_anchor_rate,1)} / ${fmt(visual.s3e_alpha_native_rtk_correction_rate,1)} min⁻¹</strong> · worst SE(3) ${fmt(visual.s3e_alpha_native_rtk_se3_ate_max,3)} m</span>`,
+        `<span>native RTK Sim(3) Alpha / Bob / Carol <strong>${fmt(visual.s3e_native_rtk_by_agent.Alpha.ate_m,3)} / ${fmt(visual.s3e_native_rtk_by_agent.Bob.ate_m,3)} / ${fmt(visual.s3e_native_rtk_by_agent.Carol.ate_m,3)} m</strong></span>`,
+        `<span>Alpha past-segment live hold <strong>${fmt(visual.s3e_alpha_segment_hold_ate_min,3)}–${fmt(visual.s3e_alpha_segment_hold_ate_max,3)} m</strong> · ${visual.s3e_alpha_segment_hold_target_pass_count}/3 passes</span>`,
+        `<span>past-segment live hold Alpha / Bob / Carol <strong>${fmt(visual.s3e_segment_hold_by_agent.Alpha,3)} / ${fmt(visual.s3e_segment_hold_by_agent.Bob,3)} / ${fmt(visual.s3e_segment_hold_by_agent.Carol,3)} m</strong></span>`,
+        `<span>past-segment hold updates Alpha / Bob / Carol <strong>${fmt(visual.s3e_segment_hold_updates_by_agent.Alpha,1)} / ${fmt(visual.s3e_segment_hold_updates_by_agent.Bob,1)} / ${fmt(visual.s3e_segment_hold_updates_by_agent.Carol,1)} min⁻¹</strong> · current pose, position-only, claim closed</span>`,
+        `<span>Alpha live hold ATE @ 0.1 / 0.2 / 0.5 / 1.0 s <strong>${fmt(visual.s3e_alpha_segment_hold_horizon_ate['0.1'],3)} / ${fmt(visual.s3e_alpha_segment_hold_horizon_ate['0.2'],3)} / ${fmt(visual.s3e_alpha_segment_hold_horizon_ate['0.5'],3)} / ${fmt(visual.s3e_alpha_segment_hold_horizon_ate['1.0'],3)} m</strong></span>`,
+        `<span>live target horizon Alpha / Bob / Carol <strong>${fmt(visual.s3e_segment_hold_target_horizon_by_agent.Alpha,1)} / ${fmt(visual.s3e_segment_hold_target_horizon_by_agent.Bob,1)} / ${fmt(visual.s3e_segment_hold_target_horizon_by_agent.Carol,1)} s</strong> · Alpha requires ≥${fmt(visual.s3e_alpha_segment_hold_required_observation_rate,0)} observations/min</span>`,
+        `<span>Alpha fixed-lag native Sim(3) <strong>${fmt(visual.s3e_alpha_fixed_lag_sim3_ate_min,3)}–${fmt(visual.s3e_alpha_fixed_lag_sim3_ate_max,3)} m</strong> · ${visual.s3e_alpha_fixed_lag_target_pass_count}/3 finalized-map passes</span>`,
+        `<span>fixed-lag native Sim(3) Alpha / Bob / Carol <strong>${fmt(visual.s3e_fixed_lag_by_agent.Alpha,3)} / ${fmt(visual.s3e_fixed_lag_by_agent.Bob,3)} / ${fmt(visual.s3e_fixed_lag_by_agent.Carol,3)} m</strong></span>`,
+        `<span>fixed-lag mean / p95 / max delay <strong>${fmt(visual.s3e_alpha_fixed_lag_latency_mean_s,3)} / ${fmt(visual.s3e_alpha_fixed_lag_latency_p95_s,3)} / ${fmt(visual.s3e_alpha_fixed_lag_latency_max_s,3)} s</strong> · ${fmt(visual.s3e_alpha_fixed_lag_updates_per_minute,1)} map finalizations/min</span>`,
+        `<span>Alpha fixed-lag scale p05 / p95 / max <strong>${fmt(visual.s3e_alpha_fixed_lag_scale_p05_min,3)} / ${fmt(visual.s3e_alpha_fixed_lag_scale_p95_max,3)} / ${fmt(visual.s3e_alpha_fixed_lag_scale_max,3)}×</strong> · ${fmt(visual.s3e_alpha_fixed_lag_scale_plausible_fraction*100,0)}% inside 0.5–2.0× gate</span>`,
+        `<span>fixed-lag caveat <strong>past trajectory only</strong> · ${fmt(visual.s3e_alpha_fixed_lag_coverage_min*100,1)}% coverage · live Wingman pose still fails</span>`,
+        `<span>Alpha adaptive fixed lag <strong>${fmt(visual.s3e_alpha_adaptive_fixed_lag_ate_min,3)}–${fmt(visual.s3e_alpha_adaptive_fixed_lag_ate_max,3)} m</strong> · ${visual.s3e_alpha_adaptive_fixed_lag_target_pass_count}/3 finalized-map passes</span>`,
+        `<span>adaptive finalizations <strong>${fmt(visual.s3e_alpha_adaptive_fixed_lag_updates_min,1)}–${fmt(visual.s3e_alpha_adaptive_fixed_lag_updates_max,1)} min⁻¹</strong> · ${fmt(visual.s3e_alpha_adaptive_fixed_lag_reduction_min,1)}–${fmt(visual.s3e_alpha_adaptive_fixed_lag_reduction_max,1)}% below full-rate</span>`,
+        `<span>adaptive mean / p95 / max delay <strong>${fmt(visual.s3e_alpha_adaptive_fixed_lag_latency_mean_s,3)} / ${fmt(visual.s3e_alpha_adaptive_fixed_lag_latency_p95_s,3)} / ${fmt(visual.s3e_alpha_adaptive_fixed_lag_latency_max_s,3)} s</strong></span>`,
+        `<span>adaptive fixed-lag Alpha / Bob / Carol <strong>${fmt(visual.s3e_adaptive_fixed_lag_by_agent.Alpha,3)} / ${fmt(visual.s3e_adaptive_fixed_lag_by_agent.Bob,3)} / ${fmt(visual.s3e_adaptive_fixed_lag_by_agent.Carol,3)} m</strong></span>`,
+        `<span>adaptive finalizations Alpha / Bob / Carol <strong>${fmt(visual.s3e_adaptive_fixed_lag_updates_by_agent.Alpha,1)} / ${fmt(visual.s3e_adaptive_fixed_lag_updates_by_agent.Bob,1)} / ${fmt(visual.s3e_adaptive_fixed_lag_updates_by_agent.Carol,1)} min⁻¹</strong></span>`,
+        `<span>adaptive caveat <strong>RTK ingress unchanged</strong> · delayed map only · live pose still closed</span>`,
+        `<span>rotation step / reset guard <strong>${fmt(visual.correction_max_rotation_step_rad,2)} / ${fmt(visual.correction_max_total_rotation_rad,2)} rad</strong></span>`,
+        `<span>scheduler average capacity / demand <strong>${fmt(visual.s3e_capacity_configured_messages_per_minute,0)} / ${fmt(visual.s3e_capacity_required_messages_per_minute,1)} msg/min</strong></span>`,
+        `<span>fail-closed traffic suppression <strong>${fmt(visual.s3e_capacity_suppressed_messages_per_minute,1)} msg/min · peak ${visual.s3e_capacity_suppressed_peak_per_second} s⁻¹</strong></span>`,
+        `<span>scheduler peak capacity / demand <strong>${fmt(visual.s3e_capacity_configured_peak_per_second,0)} / ${visual.s3e_capacity_required_peak_per_second} s⁻¹</strong></span>`,
+        `<span>configured / required scheduler tick <strong>${fmt(visual.s3e_capacity_configured_evaluation_period_s,1)} / ${fmt(visual.s3e_capacity_recommended_evaluation_period_s,3)} s</strong></span>`,
+        `<span>capacity action <strong>${visual.s3e_capacity_action.replaceAll('_',' ')}</strong></span>`,
+        `<span>Wingman actions <strong>${visual.s3e_correction_profiles.map(profile => `${profile.agent_id}: ${profile.action.replaceAll('_',' ')}`).join(' · ')}</strong></span>`,
+        `<span>tracking / live-pose failures <strong>${visual.s3e_capacity_tracking_failure_agents.join(', ') || 'none'} / ${visual.s3e_capacity_live_pose_failure_agents.join(', ') || 'none'}</strong></span>`,
+        `<span>schedulable / relocalize <strong>${visual.s3e_capacity_schedulable_agents.join(', ') || 'none'} / ${visual.s3e_capacity_relocalization_agents.join(', ') || 'none'}</strong></span>`,
+        `<span>proxy per Wingman Alpha / Bob / Carol <strong>${fmt(visual.s3e_messages_per_minute_by_agent.Alpha,2)} / ${fmt(visual.s3e_messages_per_minute_by_agent.Bob,2)} / ${fmt(visual.s3e_messages_per_minute_by_agent.Carol,2)} msg/min</strong></span>`,
+        `<span>rationalization <strong>${fmt(visual.s3e_optimization_latency_ms,2)} ms</strong></span>`,
+      ].join('');
+      return visualShell('SE(3) graph + covariance', svg, badges);
     };
     const correctionVisual = visual => {
       if (visual.pre_global_pose_map && visual.post_global_pose_map) {
@@ -1606,9 +3598,6 @@ HTML = r"""<!doctype html>
       initializeEvidenceVideos();
     };
     renderComponents('all');
-    if (window.location.hash) {
-      window.setTimeout(() => document.querySelector(window.location.hash)?.scrollIntoView(), 0);
-    }
     window.setInterval(() => {
       if (!evidencePlaying) return;
       evidenceFrameIndex = (evidenceFrameIndex + 1) % segment.frame_count;
@@ -1631,9 +3620,14 @@ HTML = r"""<!doctype html>
     ];
     document.getElementById('proof-grid').innerHTML = proof.map(([value, label]) => `<div class="proof"><strong>${value}</strong><span>${label}</span></div>`).join('');
     document.getElementById('sources').innerHTML = data.sources.map(source => `<code>${source}</code>`).join('');
-    if (window.location.hash) {
-      document.querySelector(window.location.hash)?.scrollIntoView();
-    }
+    const scrollToCurrentSection = () => {
+      if (!window.location.hash) return;
+      let sectionId;
+      try { sectionId = decodeURIComponent(window.location.hash.slice(1)); } catch { sectionId = window.location.hash.slice(1); }
+      document.getElementById(sectionId)?.scrollIntoView();
+    };
+    scrollToCurrentSection();
+    window.addEventListener('load', () => window.setTimeout(scrollToCurrentSection, 0), { once: true });
   </script>
 </body>
 </html>"""
@@ -1641,7 +3635,19 @@ HTML = r"""<!doctype html>
 
 def main() -> int:
     payload = json.dumps(build_payload(), separators=(",", ":"), ensure_ascii=True)
+    payload = payload.replace("</", "<\\/").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    artifact_link = OUTPUT.parent / "s3e-global-gaussian-static"
+    artifact_target = STATIC_GLOBAL_GAUSSIANS.parent
+    if artifact_link.is_symlink():
+        if artifact_link.resolve() != artifact_target.resolve():
+            raise RuntimeError(f"report artifact link points to an unexpected target: {artifact_link}")
+    elif artifact_link.exists():
+        raise RuntimeError(f"report artifact path already exists and is not a symlink: {artifact_link}")
+    else:
+        artifact_link.symlink_to(
+            Path("../outputs/ariadne/s3e-global-gaussian-static"), target_is_directory=True
+        )
     OUTPUT.write_text(HTML.replace("__PAYLOAD__", payload), encoding="utf-8")
     print(OUTPUT)
     return 0

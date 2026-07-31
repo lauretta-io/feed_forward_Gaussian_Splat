@@ -191,16 +191,30 @@ class CorrectionApplier:
         *,
         max_translation_step_m: float = 0.5,
         max_total_translation_m: float = 10.0,
+        max_rotation_step_rad: float = 0.1,
+        max_total_rotation_rad: float = 0.5,
         max_applied_history: int = 4096,
     ) -> None:
+        controls = (
+            max_translation_step_m,
+            max_total_translation_m,
+            max_rotation_step_rad,
+            max_total_rotation_rad,
+        )
         if (
-            max_translation_step_m <= 0
+            not all(np.isfinite(value) for value in controls)
+            or max_translation_step_m <= 0
             or max_total_translation_m < max_translation_step_m
+            or max_rotation_step_rad <= 0
+            or max_total_rotation_rad < max_rotation_step_rad
+            or max_total_rotation_rad > np.pi
             or max_applied_history <= 0
         ):
             raise ValueError("correction application bounds are invalid")
         self.max_translation_step_m = max_translation_step_m
         self.max_total_translation_m = max_total_translation_m
+        self.max_rotation_step_rad = max_rotation_step_rad
+        self.max_total_rotation_rad = max_total_rotation_rad
         self.max_applied_history = max_applied_history
         self._applied: set[str] = set()
         self._applied_order: deque[str] = deque()
@@ -209,6 +223,7 @@ class CorrectionApplier:
             "duplicates": 0,
             "expired": 0,
             "smoothed": 0,
+            "rotation_limited": 0,
             "reset_required": 0,
             "restores": 0,
         }
@@ -230,18 +245,43 @@ class CorrectionApplier:
             raise ValueError("local pose and correction frames do not compose")
         translation = correction.local_to_global.translation_m
         distance = float(np.linalg.norm(translation))
-        if distance > self.max_total_translation_m:
+        quaternion = correction.local_to_global.quaternion_xyzw()
+        if quaternion[3] < 0:
+            quaternion = -quaternion
+        rotation_angle_rad = 2.0 * float(
+            np.arccos(np.clip(quaternion[3], -1.0, 1.0))
+        )
+        if (
+            distance > self.max_total_translation_m
+            or rotation_angle_rad > self.max_total_rotation_rad
+        ):
             self.metrics["reset_required"] += 1
             raise CorrectionResetRequiredError(
-                "correction exceeds the continuity-preserving translation bound"
+                "correction exceeds the continuity-preserving SE(3) bound"
             )
         epsilon = float(np.finfo(np.float64).eps)
-        fraction = min(1.0, self.max_translation_step_m / max(distance, epsilon))
-        quaternion = correction.local_to_global.quaternion_xyzw()
-        partial_quaternion = (
-            np.array([0.0, 0.0, 0.0, 1.0]) * (1.0 - fraction) + quaternion * fraction
+        translation_fraction = min(
+            1.0,
+            self.max_translation_step_m / max(distance, epsilon),
         )
-        partial_quaternion /= np.linalg.norm(partial_quaternion)
+        rotation_fraction = min(
+            1.0,
+            self.max_rotation_step_rad / max(rotation_angle_rad, epsilon),
+        )
+        fraction = min(translation_fraction, rotation_fraction)
+        half_angle_rad = rotation_angle_rad / 2.0
+        sine_half_angle = float(np.sin(half_angle_rad))
+        if sine_half_angle <= epsilon:
+            partial_quaternion = np.array([0.0, 0.0, 0.0, 1.0])
+        else:
+            axis = quaternion[:3] / sine_half_angle
+            partial_half_angle_rad = half_angle_rad * fraction
+            partial_quaternion = np.concatenate(
+                (
+                    axis * np.sin(partial_half_angle_rad),
+                    np.array([np.cos(partial_half_angle_rad)]),
+                )
+            )
         partial = TransformSE3.from_translation_quaternion(
             correction.local_to_global.source,
             correction.local_to_global.destination,
@@ -255,6 +295,9 @@ class CorrectionApplier:
             self._applied.remove(self._applied_order.popleft())
         self.metrics["applied"] += 1
         self.metrics["smoothed"] += int(fraction < 1.0)
+        self.metrics["rotation_limited"] += int(
+            rotation_fraction < translation_fraction
+        )
         LOGGER.info("correction_applied id=%s fraction=%.3f", correction.correction_id, fraction)
         return AppliedCorrection(correction.correction_id, corrected, fraction)
 
@@ -265,6 +308,8 @@ class CorrectionApplier:
                 "schema": APPLIER_SCHEMA,
                 "max_translation_step_m": self.max_translation_step_m,
                 "max_total_translation_m": self.max_total_translation_m,
+                "max_rotation_step_rad": self.max_rotation_step_rad,
+                "max_total_rotation_rad": self.max_total_rotation_rad,
                 "max_applied_history": self.max_applied_history,
                 "applied_ids": list(self._applied_order),
             },
@@ -278,6 +323,8 @@ class CorrectionApplier:
         applier = cls(
             max_translation_step_m=float(payload["max_translation_step_m"]),
             max_total_translation_m=float(payload["max_total_translation_m"]),
+            max_rotation_step_rad=float(payload.get("max_rotation_step_rad", 0.1)),
+            max_total_rotation_rad=float(payload.get("max_total_rotation_rad", 0.5)),
             max_applied_history=int(payload["max_applied_history"]),
         )
         applied_ids = [str(value) for value in cast(list[object], payload["applied_ids"])]

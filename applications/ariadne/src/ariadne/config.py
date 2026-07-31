@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from math import pi
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -96,6 +97,8 @@ class AssociationConfig(StrictModel):
 class CorrectionConfig(StrictModel):
     max_translation_step_m: float = Field(default=0.5, gt=0)
     max_total_translation_m: float = Field(default=10.0, gt=0)
+    max_rotation_step_rad: float = Field(default=0.1, gt=0, le=pi)
+    max_total_rotation_rad: float = Field(default=0.5, gt=0, le=pi)
     max_generated_history: int = Field(default=1024, ge=1)
     max_applied_history: int = Field(default=4096, ge=1)
     generator_snapshot_path: Path | None = None
@@ -108,6 +111,30 @@ class CorrectionConfig(StrictModel):
             raise ValueError(
                 "max_total_translation_m must be at least max_translation_step_m"
             )
+        if self.max_total_rotation_rad < self.max_rotation_step_rad:
+            raise ValueError(
+                "max_total_rotation_rad must be at least max_rotation_step_rad"
+            )
+        return self
+
+
+class CorrectionSchedulingConfig(StrictModel):
+    target_error_m: float = Field(default=0.1, gt=0)
+    target_orientation_error_rad: float = Field(default=0.05, gt=0, le=pi)
+    nominal_interval_seconds: float = Field(default=9.0, gt=0)
+    minimum_interval_seconds: float = Field(default=2.0, gt=0)
+    maximum_interval_seconds: float = Field(default=60.0, gt=0)
+    evaluation_period_seconds: float = Field(default=1.0, gt=0)
+    max_corrections_per_cycle: int = Field(default=2, ge=1)
+
+    @model_validator(mode="after")
+    def intervals_are_ordered(self) -> CorrectionSchedulingConfig:
+        if not (
+            self.minimum_interval_seconds
+            <= self.nominal_interval_seconds
+            <= self.maximum_interval_seconds
+        ):
+            raise ValueError("correction scheduling intervals must be ordered")
         return self
 
 
@@ -170,6 +197,7 @@ class IntelligenceConfig(StrictModel):
     association: AssociationConfig = AssociationConfig()
     pose_graph: PoseGraphConfig = PoseGraphConfig()
     correction: CorrectionConfig = CorrectionConfig()
+    correction_scheduling: CorrectionSchedulingConfig = CorrectionSchedulingConfig()
     context: ContextConfig = ContextConfig()
     planning: PlanningConfig = PlanningConfig()
     telemetry: TelemetryConfig = TelemetryConfig()

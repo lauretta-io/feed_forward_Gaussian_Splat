@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[3]
 DATASETS = (
     ("miluv", ROOT / "datasets/ariadne/miluv/archives/default_3_random_0.zip"),
     ("d2slam", ROOT / "datasets/ariadne/d2slam/extracted/tum_corr"),
-    ("qdrone", ROOT / "datasets/ariadne/qdrone/raw"),
     ("s3e", ROOT / "datasets/ariadne/s3e/S3Ev1/S3E_Playground_2/S3E_Playground_2.db3"),
     ("simulation", None),
 )

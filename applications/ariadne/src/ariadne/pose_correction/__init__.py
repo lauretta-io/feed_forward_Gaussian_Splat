@@ -7,6 +7,15 @@ from ariadne.pose_correction.deltas import (
     CorrectionDeltaGenerator,
     CorrectionResetRequiredError,
 )
+from ariadne.pose_correction.scheduler import (
+    CorrectionCadenceScheduler,
+    CorrectionCapacityAssessment,
+    CorrectionDecision,
+    CorrectionDemand,
+    CorrectionLoadProfile,
+    CorrectionSchedule,
+    assess_correction_capacity,
+)
 
 __all__ = [
     "AppliedCorrection",
@@ -14,4 +23,11 @@ __all__ = [
     "CorrectionDelta",
     "CorrectionDeltaGenerator",
     "CorrectionResetRequiredError",
+    "CorrectionCadenceScheduler",
+    "CorrectionCapacityAssessment",
+    "CorrectionDecision",
+    "CorrectionDemand",
+    "CorrectionLoadProfile",
+    "CorrectionSchedule",
+    "assess_correction_capacity",
 ]

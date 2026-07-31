@@ -1,4 +1,4 @@
-"""ZIP archive probes for MILUV and QDrone datasets."""
+"""ZIP archive probe for the MILUV dataset."""
 
 from __future__ import annotations
 
@@ -145,55 +145,4 @@ def evaluate_miluv(path: Path) -> DatasetEvaluation:
         },
         warnings=tuple(warnings),
         details={"path": str(path), "agents": agent_details, "sample_members": names[:50]},
-    )
-
-
-def evaluate_qdrone(path: Path) -> DatasetEvaluation:
-    archives = sorted(path.glob("*.zip")) if path.is_dir() else [path]
-    if not archives or any(not archive.is_file() for archive in archives):
-        raise FileNotFoundError(f"QDrone archives do not exist: {path}")
-    names, compressed_bytes, uncompressed_bytes = _zip_inventory(archives)
-    record_types: set[int] = set()
-    for archive in archives:
-        with zipfile.ZipFile(archive) as handle:
-            for info in handle.infolist():
-                if not info.filename.lower().endswith(".csv"):
-                    continue
-                with handle.open(info) as raw, io.TextIOWrapper(raw, encoding="utf-8") as text:
-                    for index, line in enumerate(text):
-                        if index >= 20_000 or {0, 2} <= record_types:
-                            break
-                        try:
-                            record_types.add(int(line.split(",", maxsplit=1)[0]))
-                        except ValueError:
-                            continue
-                if {0, 2} <= record_types:
-                    break
-    modalities = []
-    if 2 in record_types:
-        modalities.append("imu")
-    if 0 in record_types:
-        modalities.append("uwb")
-    has_ground_truth = any("gt" in archive.stem.lower() for archive in archives)
-    if has_ground_truth:
-        modalities.append("ground_truth")
-    return DatasetEvaluation(
-        dataset="qdrone",
-        status="passed" if "imu" in modalities and "uwb" in modalities else "failed",
-        agents=("qdrone",),
-        modalities=tuple(modalities),
-        metrics={
-            "agent_count": 1,
-            "archive_count": len(archives),
-            "archive_member_count": len(names),
-            "compressed_bytes": compressed_bytes,
-            "uncompressed_bytes": uncompressed_bytes,
-            "has_ground_truth": int(has_ground_truth),
-        },
-        warnings=("QDrone has no vision stream and cannot run end-to-end ARIADNE",),
-        details={
-            "path": str(path),
-            "archives": [archive.name for archive in archives],
-            "record_types": sorted(record_types),
-        },
     )

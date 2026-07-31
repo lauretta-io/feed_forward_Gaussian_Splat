@@ -8,6 +8,7 @@ from ariadne.replay.sources import (
     ReplaySource,
     RosbagReplaySource,
     S3EReplaySource,
+    read_ground_truth_poses,
 )
 from ariadne.replay.synchronizer import (
     ImageFrame,
@@ -28,6 +29,7 @@ __all__ = [
     "ReplaySynchronizer",
     "RosbagReplaySource",
     "S3EReplaySource",
+    "read_ground_truth_poses",
     "SynchronizationResult",
     "SynchronizedPacket",
 ]

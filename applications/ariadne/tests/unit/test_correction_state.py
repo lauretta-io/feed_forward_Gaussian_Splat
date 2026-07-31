@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from ariadne.common import FrameId, Timestamp, TransformSE3
@@ -12,12 +13,12 @@ from ariadne.pose_correction import (
 )
 
 
-def pose(destination: str, x: float) -> TransformSE3:
+def pose(destination: str, x: float, yaw_rad: float = 0.0) -> TransformSE3:
     return TransformSE3.from_translation_quaternion(
         FrameId("body"),
         FrameId(destination),
         (x, 0.0, 0.0),
-        (0.0, 0.0, 0.0, 1.0),
+        (0.0, 0.0, np.sin(yaw_rad / 2.0), np.cos(yaw_rad / 2.0)),
     )
 
 
@@ -83,3 +84,46 @@ def test_applier_flags_reset_required_for_unsafe_global_jump() -> None:
     with pytest.raises(CorrectionResetRequiredError, match="continuity"):
         applier.apply(local, correction, now=Timestamp(101))
     assert applier.metrics["reset_required"] == 1
+
+
+def test_applier_flags_reset_required_for_unsafe_rotation_jump() -> None:
+    local = pose("local_wingman_01", 0.0)
+    optimized = pose("global", 0.0, yaw_rad=1.0)
+    correction = CorrectionDeltaGenerator().generate(
+        "wingman_01",
+        local,
+        optimized,
+        issued_at=Timestamp(100),
+    )
+    applier = CorrectionApplier(
+        max_rotation_step_rad=0.1,
+        max_total_rotation_rad=0.5,
+    )
+
+    with pytest.raises(CorrectionResetRequiredError, match=r"SE\(3\)"):
+        applier.apply(local, correction, now=Timestamp(101))
+
+    assert applier.metrics["reset_required"] == 1
+
+
+def test_applier_smooths_rotation_independently_from_translation() -> None:
+    local = pose("local_wingman_01", 0.0)
+    optimized = pose("global", 0.0, yaw_rad=0.4)
+    correction = CorrectionDeltaGenerator().generate(
+        "wingman_01",
+        local,
+        optimized,
+        issued_at=Timestamp(100),
+    )
+    applier = CorrectionApplier(
+        max_rotation_step_rad=0.1,
+        max_total_rotation_rad=0.5,
+    )
+
+    applied = applier.apply(local, correction, now=Timestamp(101))
+    quaternion = applied.corrected_pose.quaternion_xyzw()
+    applied_angle = 2.0 * np.arccos(abs(float(quaternion[3])))
+
+    assert applied.applied_fraction == pytest.approx(0.25)
+    assert applied_angle <= 0.100000001
+    assert applier.metrics["rotation_limited"] == 1

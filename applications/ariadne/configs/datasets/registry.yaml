@@ -1,10 +1,4 @@
 datasets:
-  qdrone:
-    license: MIT
-    upstream: https://huggingface.co/datasets/QDrone/UWB_IMU_GT_QDrone_Benchmark_Dataset
-    full_size_bytes: 59116199
-    local_path: datasets/ariadne/qdrone/raw
-    role: imu_uwb_regression
   miluv:
     license: CC-BY-4.0
     upstream: https://doi.org/10.25452/figshare.plus.28386041.v1

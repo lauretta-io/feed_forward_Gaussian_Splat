@@ -29,17 +29,6 @@ class DatasetEvaluationTest(unittest.TestCase):
             self.assertEqual(result.metrics["agent_count"], 3)
             self.assertEqual(result.metrics["image_count"], 3)
 
-    def test_qdrone_is_partial_single_agent_regression(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ("indoor.zip", "indoor-gt.zip"):
-                with zipfile.ZipFile(root / name, "w") as handle:
-                    handle.writestr("flight.csv", "2,1.0,0.0\n0,1.1,100,3.0\n")
-            result = evaluate_dataset("qdrone", root)
-            self.assertEqual(result.status, "passed")
-            self.assertEqual(result.agents, ("qdrone",))
-            self.assertIn("no vision", result.warnings[0])
-
     def test_s3e_ros2_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bag = Path(directory) / "test.db3"

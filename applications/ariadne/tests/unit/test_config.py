@@ -22,6 +22,23 @@ class ConfigTest(unittest.TestCase):
                 self.assertEqual(config.runtime.role, role)
                 if role == "simulation":
                     self.assertEqual(config.simulation.partition_duration_seconds, 60.0)
+                if role == "intelligence":
+                    self.assertEqual(
+                        config.intelligence.correction_scheduling.target_error_m,
+                        0.1,
+                    )
+                    self.assertEqual(
+                        config.intelligence.correction_scheduling.target_orientation_error_rad,
+                        0.05,
+                    )
+                    self.assertEqual(
+                        config.intelligence.correction.max_rotation_step_rad,
+                        0.1,
+                    )
+                    self.assertEqual(
+                        config.intelligence.correction.max_total_rotation_rad,
+                        0.5,
+                    )
 
     def test_unknown_fields_are_rejected(self) -> None:
         content = """

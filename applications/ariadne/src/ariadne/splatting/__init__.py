@@ -13,6 +13,12 @@ from ariadne.splatting.adapter import (
     ReconstructionResult,
     ReferenceGaussianSplatAdapter,
 )
+from ariadne.splatting.dense_fusion import (
+    DenseFusionResult,
+    DenseGaussianContribution,
+    contributions_from_manifest,
+    fuse_static_gaussian_plys,
+)
 from ariadne.splatting.scene_map import (
     GlobalGaussianMap,
     SceneSnapshot,
@@ -27,6 +33,8 @@ __all__ = [
     "GaussianReconstructionExecutor",
     "GaussianResourceError",
     "GaussianSplatBackend",
+    "DenseFusionResult",
+    "DenseGaussianContribution",
     "GlobalGaussianMap",
     "ReconstructionDiagnostics",
     "ReconstructionLimits",
@@ -34,4 +42,6 @@ __all__ = [
     "ReferenceGaussianSplatAdapter",
     "SceneSnapshot",
     "SceneSnapshotStore",
+    "contributions_from_manifest",
+    "fuse_static_gaussian_plys",
 ]

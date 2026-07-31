@@ -16,8 +16,10 @@ from pydantic import ValidationError
 from ariadne.benchmarks import (
     run_exchange_benchmark,
     run_global_scene_benchmark,
+    run_miluv_global_pose_benchmark,
     run_operations_benchmark,
     run_phase1_benchmark,
+    run_s3e_global_pose_benchmark,
 )
 from ariadne.common import FrameId, TransformSE3
 from ariadne.config import AriadneConfig, load_config
@@ -90,11 +92,28 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark = subparsers.add_parser("benchmark", help="run a benchmark suite")
     benchmark.add_argument(
         "--suite",
-        choices=("smoke", "phase1", "exchange", "global-scene", "operations", "end-to-end"),
+        choices=(
+            "smoke",
+            "phase1",
+            "exchange",
+            "global-scene",
+            "miluv-global-pose",
+            "s3e-global-pose",
+            "operations",
+            "end-to-end",
+        ),
         required=True,
     )
     benchmark.add_argument("--output")
     benchmark.add_argument("--seed", type=int, default=7)
+    benchmark.add_argument(
+        "--miluv-archive",
+        help="MILUV experiment ZIP containing three-agent mocap and UWB CSV files",
+    )
+    benchmark.add_argument(
+        "--s3e-root",
+        help="S3Ev1 root containing Calibration and S3E_Playground_2",
+    )
     benchmark.add_argument(
         "--wandb-mode", choices=("disabled", "offline", "online"), default="disabled"
     )
@@ -106,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     evaluate = subparsers.add_parser("evaluate", help="evaluate an ARIADNE dataset replay")
     evaluate.add_argument(
-        "--dataset", choices=("miluv", "d2slam", "qdrone", "s3e", "simulation"), required=True
+        "--dataset", choices=("miluv", "d2slam", "s3e", "simulation"), required=True
     )
     evaluate.add_argument("--path")
     evaluate.add_argument("--output", required=True)
@@ -141,10 +160,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "phase1": run_phase1_benchmark,
                     "exchange": run_exchange_benchmark,
                     "global-scene": run_global_scene_benchmark,
+                    "miluv-global-pose": run_miluv_global_pose_benchmark,
+                    "s3e-global-pose": run_s3e_global_pose_benchmark,
                     "operations": run_operations_benchmark,
                     "end-to-end": run_reference_system,
                 }
-                result = benchmark_runners[args.suite](args.seed)
+                if args.suite == "miluv-global-pose":
+                    result = run_miluv_global_pose_benchmark(
+                        args.seed,
+                        args.miluv_archive,
+                    )
+                elif args.suite == "s3e-global-pose":
+                    result = run_s3e_global_pose_benchmark(args.seed, args.s3e_root)
+                else:
+                    result = benchmark_runners[args.suite](args.seed)
                 default_output = f"outputs/ariadne/{args.suite}/benchmark.json"
                 output_path = Path(args.output or default_output)
                 result.write_json(output_path)
